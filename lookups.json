@@ -1,42 +1,74 @@
 {
   "_versao": "2.0 — baseado na investigação massiva 194+ attributes (08/05/2026)",
-
   "estados": {
-    "AC": "1", "AL": "2", "AP": "3", "AM": "4", "BA": "5",
-    "CE": "6", "DF": "7", "ES": "8", "GO": "9", "MA": "10",
-    "MT": "11", "MS": "12", "MG": "13", "PA": "14", "PB": "15",
-    "PR": "16", "PE": "17", "PI": "18", "RJ": "19", "RN": "20",
-    "RS": "21", "RO": "22", "RR": "23", "SC": "24", "SP": "25",
-    "SE": "26", "TO": "27"
+    "AC": "1",
+    "AL": "2",
+    "AP": "3",
+    "AM": "4",
+    "BA": "5",
+    "CE": "6",
+    "DF": "7",
+    "ES": "8",
+    "GO": "9",
+    "MA": "10",
+    "MT": "11",
+    "MS": "12",
+    "MG": "13",
+    "PA": "14",
+    "PB": "15",
+    "PR": "16",
+    "PE": "17",
+    "PI": "18",
+    "RJ": "19",
+    "RN": "20",
+    "RS": "21",
+    "RO": "22",
+    "RR": "23",
+    "SC": "24",
+    "SP": "25",
+    "SE": "26",
+    "TO": "27"
   },
-
   "tipos_sexo": {
     "Não Informado": "0",
     "Masculino": "1",
     "Feminino": "2"
   },
-
   "tipos_raca": {
     "_AVISO": "BUG OFF-BY-ONE BILATERAL — UI exibe descricao(id-1). Parda e Não-Informado são inalcançáveis via UI.",
     "_lookup_real": {
-      "0": "Indígena", "1": "Branca", "2": "Negra",
-      "3": "Amarela", "4": "Parda", "5": "Não-Informado"
+      "0": "Indígena",
+      "1": "Branca",
+      "2": "Negra",
+      "3": "Amarela",
+      "4": "Parda",
+      "5": "Não-Informado"
     },
     "_workaround_para_enviar": {
-      "Indígena": "1", "Branca": "2", "Negra": "3", "Amarela": "4",
-      "Parda": "4", "Não-Informado": "5"
+      "Indígena": "1",
+      "Branca": "2",
+      "Negra": "3",
+      "Amarela": "4",
+      "Parda": "4",
+      "Não-Informado": "5"
     },
-    "_default_escritorio": "4",
-    "_nota": "Parda (id=4) é o default. UI mostra vazio, mas API armazena correto. DP corrige no Desktop se necessário."
+    "_default_escritorio": "2",
+    "_nota": "Default temporário id=2 (workaround bug off-by-one) — semanticamente Parda=id=4, mas UI só renderiza 1/2/3. Reverter para id=4 quando Alterdata corrigir."
   },
-
   "tipos_identidade": {
     "_AVISO": "BUG OFF-BY-ONE — para UI exibir 'RG', enviar id=1. Confirmado 08/05/2026 matriz 10186/87/88.",
-    "_lookup_real": { "0": "RG", "1": "RIC", "2": "RNE" },
-    "_workaround_para_enviar": { "RG": "1", "RIC": "2", "RNE": "2" },
+    "_lookup_real": {
+      "0": "RG",
+      "1": "RIC",
+      "2": "RNE"
+    },
+    "_workaround_para_enviar": {
+      "RG": "1",
+      "RIC": "2",
+      "RNE": "2"
+    },
     "_default_escritorio_workaround": "1"
   },
-
   "tipos_escolaridade": {
     "1": "Analfabeto",
     "2": "Fundamental incompleto até 4ª série",
@@ -54,11 +86,26 @@
     "_heuristica": {
       "cargo_baixo_id": "7",
       "cargo_alto_id": "9",
-      "cargos_baixos": ["auxiliar", "ajudante", "atendente", "motorista", "cozinheiro", "caixa", "vendedor", "operador"],
-      "cargos_altos": ["gerente", "supervisor", "analista", "engenheiro", "coordenador", "diretor"]
+      "cargos_baixos": [
+        "auxiliar",
+        "ajudante",
+        "atendente",
+        "motorista",
+        "cozinheiro",
+        "caixa",
+        "vendedor",
+        "operador"
+      ],
+      "cargos_altos": [
+        "gerente",
+        "supervisor",
+        "analista",
+        "engenheiro",
+        "coordenador",
+        "diretor"
+      ]
     }
   },
-
   "tipos_estado_civil": {
     "Solteiro": "1",
     "Casado": "2",
@@ -68,7 +115,6 @@
     "_default_escritorio": "1",
     "_nota": "Default Solteiro (id=1) — aplicar se cliente não informar."
   },
-
   "tipos_admissao": {
     "Admissão": "1",
     "Transferência": "2",
@@ -76,7 +122,6 @@
     "Cessão": "4",
     "_default_escritorio": "1"
   },
-
   "tipos_vinculo_trabalhista": {
     "CLT Urbano PJ Indeterminado": "10",
     "CLT Urbano PF Indeterminado": "15",
@@ -86,7 +131,6 @@
     "_default_escritorio": "10",
     "_nota": "Default id=10. Revisar por empresa se for rural."
   },
-
   "tipos_categoria": {
     "Trabalhador": "1",
     "Estagiário": "0",
@@ -95,14 +139,12 @@
     "_default_escritorio": "1",
     "_nota": "Estagiário (id=0) NÃO automatizar — decisão DP."
   },
-
   "tipos_forma_pagamento": {
     "Horista": "1",
     "Mensal": "4",
     "_default_escritorio": "4",
     "_bug": "Bug 6 — Desktop tem 2 campos; payload preenche só o primeiro. DP corrige o segundo manual."
   },
-
   "tipos_de_conta": {
     "Conta Corrente": "1",
     "Poupança": "2",
@@ -110,43 +152,51 @@
     "Não Possui": "4",
     "_default_escritorio": "3"
   },
-
   "tipos_status_admissao": {
-    "_AVISO": "Matriz visual empírica confirmada via 6 cobaias D-STATUS (30/04/2026) + 5 admissões reais com id=1 (Gabrielle, Luiz Felipe, João Pedro, Ingride, RETESTE).",
-    "_default_pipeline": "1",
-    "_default_pipeline_justificativa": "id=1 (Análise) é o ÚNICO status que faz o candidato descer DIRETO pro Alterdata Desktop sem retenção. Confirmado por 5 admissões reais bem-sucedidas em produção. Status 2 e 5 retêm no eContador (vermelho); status 0 fica em azul (não desce).",
+    "_AVISO": "CRÍTICO — labels na tela são ENGANOSOS. Sempre usar IDs, nunca confiar no texto da UI.",
+    "_default_pipeline": "2",
     "_comportamento": {
-      "id_0": "Pendente — 🔵 azul. Estado inicial em alguns fluxos. NÃO desce pro Alterdata.",
-      "id_1": "Análise — 🟢 VERDE. DESCE direto pro Alterdata Desktop (sem revisão DP no eContador). USAR EM PRODUÇÃO.",
-      "id_2": "AguardandoCliente — 🔴 vermelho. RETÉM no eContador, NÃO desce pro Alterdata.",
-      "id_3": "Cadastrado — 🟠 laranja. Status final pós-gravação no Alterdata Desktop.",
-      "id_4": "Cancelado — ⚪ cinza. Rollback do candidato.",
-      "id_5": "AConcluir — 🔴 vermelho. Mesmo comportamento do id=2 (retém). Sistema atribui sozinho quando falta info."
-    },
-    "_nota_validacao": "A API E-plugin NÃO valida CPF/campos via id=2 — esse é mito. Validação de campo obrigatório acontece via HTTP 422 no POST, independente do status."
+      "id_0": "Pendente — comportamento em estudo",
+      "id_1": "Análise — bypass, vai pro Alterdata SEM validar. NÃO usar em produção.",
+      "id_2": "AguardandoCliente — USAR EM PRODUÇÃO. Valida CPF+campos, desce ao Alterdata. Se faltar info, rebaixa automaticamente para id=5.",
+      "id_3": "Cadastrado — status final",
+      "id_4": "Cancelado — rollback",
+      "id_5": "AConcluir — sistema atribui sozinho quando falta info. NÃO enviar manualmente."
+    }
   },
-
   "paises": {
     "Brasil": "105",
     "_default_escritorio": "105",
     "_nota": "Estrangeiros NÃO entram no fluxo automatizado — decisão DP."
   },
-
   "tipos_cnh": {
     "_AVISO": "BUG OFF-BY-ONE (parcial) — mesmo padrão de raca/tipoidentidade. Enviar id+1 do que quer mostrar.",
     "_lookup_real": {
-      "0": "A", "1": "B", "2": "AB", "3": "C",
-      "4": "D", "5": "E", "6": "AC", "7": "AD", "8": "AE"
+      "0": "A",
+      "1": "B",
+      "2": "AB",
+      "3": "C",
+      "4": "D",
+      "5": "E",
+      "6": "AC",
+      "7": "AD",
+      "8": "AE"
     },
     "_workaround_para_enviar": {
-      "A": "1", "B": "2", "AB": "3", "C": "4",
-      "D": "5", "E": "6", "AC": "7", "AD": "8", "AE": "8"
+      "A": "1",
+      "B": "2",
+      "AB": "3",
+      "C": "4",
+      "D": "5",
+      "E": "6",
+      "AC": "7",
+      "AD": "8",
+      "AE": "8"
     }
   },
-
   "defaults_pipeline": {
     "_descricao": "Valores padrão aplicados pelo pipeline quando não informado pelo cliente",
-    "raca_id": "4",
+    "raca_id": "2",
     "nacionalidade_id": "105",
     "paisnascimento_id": "105",
     "pais_id": "105",
@@ -156,13 +206,12 @@
     "tipoidentidade_id_workaround": "1",
     "tipoconta_id": "3",
     "tipovinculotrabalhista_id": "10",
-    "statusadmissao_id": "1",
+    "statusadmissao_id": "2",
     "primeiroemprego": false,
     "possuideficiencia": false,
     "requersegurodesemprego": false,
     "diascontratoexperiencia": 30
   },
-
   "regras_escritorio": {
     "ctps_do_cpf": "Se cliente não informar CTPS: ctps = int(CPF[:7]), seriectps = CPF[7:11], ufctps = mesma UF do RG",
     "numero_endereco_zero": "OMITIR o campo numero quando for 0 ou ausente — não enviar null nem 0",
@@ -173,7 +222,6 @@
     "estado_civil_default": "Solteiro (id=1) se cliente não informar",
     "escolaridade_heuristica": "Cargo baixo = id=7 (Médio completo). Cargo alto = id=9 (Superior completo)"
   },
-
   "bugs_conhecidos": {
     "bug_1_raca": "Off-by-one bilateral — Parda/Não-Informado inalcançáveis via UI.",
     "bug_2_tipoidentidade": "Off-by-one — enviar id=1 para UI mostrar RG.",
@@ -185,7 +233,6 @@
     "bug_8_departamento": "ID muda no mapping local do Desktop — OK, descrição confere.",
     "bug_9_numero_zero": "Desktop mostra '0' literal. OMITIR o campo quando zero."
   },
-
   "campos_faltando_no_payload": {
     "_nota": "12 campos que existem no Desktop mas não têm atributo no payload /candidatos. DP preenche manual.",
     "lista": [

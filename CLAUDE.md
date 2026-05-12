@@ -75,7 +75,7 @@ Com base nos documentos classificados, extraia os seguintes campos:
 - `admissao` — formato YYYY-MM-DD
 - `nomecargo` — nome da função conforme documento
 - `salario`
-- `diascontratoexperiencia` — padrão 90 se não informado
+- `diascontratoexperiencia` — padrão 30 se não informado
 - `primeiroemprego` — boolean
 
 **Dados bancários:**
@@ -170,7 +170,7 @@ Content-Type: application/vnd.api+json
 }
 ```
 
-> ⚠️ `statusadmissao` deve ser SEMPRE `id: "1"` (Análise) — confirmado por 5 admissões reais em produção (Gabrielle, Luiz Felipe, João Pedro, Ingride, RETESTE). É o único status que faz o candidato descer DIRETO pro Alterdata Desktop sem retenção. Status 2 (AguardandoCliente) e 5 (AConcluir) RETÊM no eContador — NÃO descem pro Alterdata. A API valida campos obrigatórios via HTTP 422 no POST independente do status, então a ideia de "id=2 valida" é mito.
+> ⚠️ `statusadmissao` deve ser SEMPRE `id: "1"` (Análise) — é o único status que faz o candidato descer direto pro Alterdata Desktop. Confirmado por 5 admissões reais em produção. `id=2` retém no eContador e NÃO desce.
 
 **Se o POST retornar 201:** sucesso — vá para o Passo 8.
 **Se retornar erro:** registre o erro completo, adicione label `ADMISSÃO/pendente` e notifique o DP.
@@ -200,10 +200,10 @@ Content-Type: application/vnd.api+json
 ## Regras Gerais
 
 1. **Nunca invente dados** — se um campo não está nos documentos, omita-o ou registre como pendência
-2. **Nunca altere o `statusadmissao`** — sempre `id: "1"` (Análise = verde, desce direto pro Alterdata). Validado por 5 admissões reais.
+2. **Nunca altere o `statusadmissao`** — sempre `id: "1"` (Análise). Confirmado por 5 admissões reais — é o único que desce pro Alterdata Desktop.
 3. **Processe um funcionário por vez** — não misture dados de e-mails diferentes
 4. **Bugs conhecidos da API:**
-   - `diascontratoexperiencia` pode chegar como `2` mesmo enviando `90` — é bug do fornecedor, ignore
+   - `diascontratoexperiencia` pode chegar como `2` mesmo enviando `30` — é bug do fornecedor, ignore
    - Datas nulas viram `30/12/1899` — por isso NUNCA envie datas nulas
    - CPF com zeros à esquerda some — por isso envie como inteiro
 5. **Em caso de dúvida, prefira registrar como pendência** a registrar dados incorretos

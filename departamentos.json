@@ -5,18 +5,86 @@
     "como_adicionar": "Adicione o CNPJ apenas com dígitos (14 caracteres) como chave."
   },
   "empresas": {
-    "EXEMPLO_UNICO_00000000000100": {
-      "modo": "unico",
-      "departamento_id": "1",
-      "departamento_nome": "Geral"
-    },
-    "EXEMPLO_MULTIPLO_00000000000200": {
+    "08867336000168": {
+      "razao_social": "SOL NASCENTE TRANSPORTADORA E LOGISTICA LTDA",
       "modo": "multiplo",
       "departamentos": [
-        { "nome_variantes": ["Financeiro", "Fin", "Financeira"], "id": "10" },
-        { "nome_variantes": ["Comercial", "Vendas", "Commercial"], "id": "11" },
-        { "nome_variantes": ["Logística", "Logistica", "Estoque"], "id": "12" },
-        { "nome_variantes": ["Administrativo", "Admin", "Administração"], "id": "13" }
+        {
+          "id": "12",
+          "nome_variantes": ["Administrativo", "Financeiro", "Administrativo/Financeiro", "Admin", "Adm"]
+        },
+        {
+          "id": "13",
+          "nome_variantes": ["Comercial", "Vendas", "Comercial/Vendas"]
+        },
+        {
+          "id": "14",
+          "nome_variantes": ["Logistica", "Logística", "CD", "Deposito", "Depósito", "Logistica CD", "Logística - CD / Depósito"]
+        },
+        {
+          "id": "15",
+          "nome_variantes": ["Promotores", "Trade", "Marketing", "Promotores/Trade", "Promotores / Trade / Marketing"]
+        },
+        {
+          "id": "16",
+          "nome_variantes": ["Transporte", "Ajudantes", "Motoristas", "Ajudante", "Motorista", "Transporte / Ajudantes e Motoristas"]
+        }
+      ]
+    },
+    "08881442000104": {
+      "razao_social": "ROSA DE OURO DISTRIBUICAO E LOGISTICA LTDA",
+      "modo": "multiplo",
+      "departamentos": [
+        {
+          "id": "42",
+          "nome_variantes": ["Estagiario", "Estagiário", "Estágio", "Rosa de Ouro Estagiário"]
+        },
+        {
+          "id": "43",
+          "nome_variantes": ["Transporte", "Ajudante", "Motorista", "Ajudante e Motorista", "Transporte / Ajudante e Motorista"]
+        },
+        {
+          "id": "44",
+          "nome_variantes": ["Promotores", "Trade", "Marketing", "Promotores/Trade", "Promotores / Trade / Marketing"]
+        },
+        {
+          "id": "45",
+          "nome_variantes": ["Comercial", "Vendas", "Comercial/Vendas"]
+        },
+        {
+          "id": "46",
+          "nome_variantes": ["Administrativo", "Financeiro", "Administração", "Administracao", "Administração / Financeiro"]
+        },
+        {
+          "id": "47",
+          "nome_variantes": ["Logistica", "Logística", "CD", "Deposito", "Depósito", "Logistica CD", "Logística - CD / Depósito"]
+        }
+      ]
+    },
+    "02199795000134": {
+      "razao_social": "EDMAR VILELA LTDA",
+      "modo": "multiplo",
+      "departamentos": [
+        {
+          "id": "19",
+          "nome_variantes": ["Vendas", "Comercial", "Venda"]
+        },
+        {
+          "id": "20",
+          "nome_variantes": ["Transporte", "Transportes"]
+        },
+        {
+          "id": "21",
+          "nome_variantes": ["Producao", "Produção", "Producao"]
+        },
+        {
+          "id": "22",
+          "nome_variantes": ["Administracao", "Administração", "Administrativo", "Admin", "Adm"]
+        },
+        {
+          "id": "23",
+          "nome_variantes": ["Carregamento", "Carga", "Cargas"]
+        }
       ]
     }
   }
