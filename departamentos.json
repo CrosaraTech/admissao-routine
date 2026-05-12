@@ -1,0 +1,23 @@
+{
+  "_instrucoes": {
+    "modo_unico": "Empresa usa apenas um departamento para todos os funcionários. Usar departamento_id fixo.",
+    "modo_multiplo": "Empresa usa departamentos reais. Claude faz match fuzzy do departamento da ficha contra a lista.",
+    "como_adicionar": "Adicione o CNPJ apenas com dígitos (14 caracteres) como chave."
+  },
+  "empresas": {
+    "EXEMPLO_UNICO_00000000000100": {
+      "modo": "unico",
+      "departamento_id": "1",
+      "departamento_nome": "Geral"
+    },
+    "EXEMPLO_MULTIPLO_00000000000200": {
+      "modo": "multiplo",
+      "departamentos": [
+        { "nome_variantes": ["Financeiro", "Fin", "Financeira"], "id": "10" },
+        { "nome_variantes": ["Comercial", "Vendas", "Commercial"], "id": "11" },
+        { "nome_variantes": ["Logística", "Logistica", "Estoque"], "id": "12" },
+        { "nome_variantes": ["Administrativo", "Admin", "Administração"], "id": "13" }
+      ]
+    }
+  }
+}

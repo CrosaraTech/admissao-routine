@@ -1,0 +1,22 @@
+{
+  "ecotador": {
+    "base_url": "https://dp.pack.alterdata.com.br/api/v1",
+    "token": "SEU_TOKEN_AQUI"
+  },
+  "gmail": {
+    "label_entrada": "ADMISSÃO",
+    "label_processado": "ADMISSÃO/processado",
+    "label_pendente": "ADMISSÃO/pendente"
+  },
+  "dp": {
+    "email_notificacao": "dp@contabilidadehavai.com.br"
+  },
+  "defaults": {
+    "statusadmissao_id": "1",
+    "tipoadmissao_id": "1",
+    "tipovinculo_id": "10",
+    "diascontratoexperiencia": 90,
+    "possuideficiencia": false,
+    "primeiroemprego": false
+  }
+}
