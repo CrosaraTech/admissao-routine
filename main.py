@@ -57,6 +57,7 @@ from dotenv import load_dotenv
 import anthropic
 
 from google.oauth2.credentials import Credentials
+from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 
 
@@ -73,7 +74,6 @@ ROOT = Path(__file__).parent
 CONFIG_FILE = ROOT / "config.json"
 LOOKUPS_FILE = ROOT / "lookups.json"
 DEPARTAMENTOS_FILE = ROOT / "departamentos.json"
-GMAIL_TOKEN_FILE = ROOT / "gmail_token.json"
 LOG_FILE = ROOT / "admissao_log.json"
 
 GMAIL_SCOPES = [
@@ -329,12 +329,52 @@ class EContadorAPI:
 # ============================================================
 
 class GmailClient:
-    def __init__(self, token_file: Path = GMAIL_TOKEN_FILE):
-        if not token_file.exists():
-            raise FileNotFoundError(
-                f"{token_file} não encontrado. Rode o fluxo OAuth uma vez antes."
+    """Cliente Gmail autenticado via variável de ambiente GMAIL_TOKEN.
+
+    GMAIL_TOKEN deve ser um JSON string com os campos:
+      token, refresh_token, token_uri, client_id, client_secret, scopes
+
+    Em Claude Code Routines, configurar GMAIL_TOKEN como secret no painel.
+    Localmente, exportar a variável ou colocar no .env (que está no .gitignore).
+    """
+
+    def __init__(self):
+        raw = os.getenv("GMAIL_TOKEN")
+        if not raw:
+            raise RuntimeError(
+                "GMAIL_TOKEN não encontrado no ambiente. "
+                "Configure como secret na Routine (ou exporte localmente)."
             )
-        creds = Credentials.from_authorized_user_file(str(token_file), GMAIL_SCOPES)
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError as e:
+            raise RuntimeError(
+                f"GMAIL_TOKEN não é JSON válido: {e}. "
+                "Esperado: {{\"token\": ..., \"refresh_token\": ..., \"token_uri\": ..., "
+                "\"client_id\": ..., \"client_secret\": ..., \"scopes\": [...]}}"
+            )
+
+        creds = Credentials(
+            token=data.get("token"),
+            refresh_token=data.get("refresh_token"),
+            token_uri=data.get("token_uri", "https://oauth2.googleapis.com/token"),
+            client_id=data.get("client_id"),
+            client_secret=data.get("client_secret"),
+            scopes=data.get("scopes") or GMAIL_SCOPES,
+        )
+
+        # Auto-refresh se expirado
+        if creds.expired and creds.refresh_token:
+            log.info("Token Gmail expirado — fazendo refresh automático...")
+            try:
+                creds.refresh(Request())
+                log.info("Refresh OK")
+            except Exception as e:
+                raise RuntimeError(
+                    f"Falha ao renovar token Gmail: {e}. "
+                    "Refresh_token pode estar revogado — regere o GMAIL_TOKEN."
+                )
+
         self.service = build("gmail", "v1", credentials=creds, cache_discovery=False)
 
     def _label_id(self, nome: str) -> str | None:

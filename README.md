@@ -23,11 +23,28 @@ pip install httpx python-dotenv anthropic \
 
 E **antes da primeira execução**:
 
-1. Editar `config.json`:
-   - Substituir `"SEU_TOKEN_AQUI"` pelo token real do eContador
-   - Ajustar `dp.email_notificacao`
-2. Gerar `gmail_token.json` via fluxo OAuth (one-time)
-3. Popular `departamentos.json` com os CNPJs reais (atualmente tem só 2 exemplos)
+1. Configurar variáveis de ambiente (Claude Code Routines: como Secrets; local: no `.env`):
+   - `ECONTADOR_TOKEN` — token JWT da API E-plugin Alterdata
+   - `GMAIL_TOKEN` — JSON string com credenciais OAuth do Gmail. Formato:
+     ```json
+     {
+       "token": "ya29....",
+       "refresh_token": "1//0...",
+       "token_uri": "https://oauth2.googleapis.com/token",
+       "client_id": "....apps.googleusercontent.com",
+       "client_secret": "GOCSPX-...",
+       "scopes": [
+         "https://www.googleapis.com/auth/gmail.readonly",
+         "https://www.googleapis.com/auth/gmail.modify",
+         "https://www.googleapis.com/auth/gmail.send"
+       ]
+     }
+     ```
+     Gere via fluxo OAuth do Google Cloud Console uma vez e cole o JSON serializado.
+     O token é auto-refreshed em runtime via `refresh_token` (não precisa renovar manual).
+   - `ANTHROPIC_API_KEY` — chave da API Anthropic pra Claude Vision
+2. Editar `config.json`: ajustar `dp.email_notificacao`
+3. Popular `departamentos.json` com os CNPJs reais
 4. (Opcional) Setar `"dry_run": true` em `config.json` pra testar sem postar
 
 ## Como rodar
