@@ -21,7 +21,9 @@ Fluxo (8 passos do CLAUDE.md):
   8. Notifica DP por email (sucesso ou pendência) + aplica label
 
 Regras críticas (CLAUDE.md + lookups.json):
-  - statusadmissao SEMPRE "2" (AguardandoCliente). NUNCA "1" (Análise bypass).
+  - statusadmissao SEMPRE "1" (Análise — verde, desce DIRETO pro Alterdata).
+    Validado por 5 admissões reais (Gabrielle, Luiz Felipe, João Pedro, Ingride, RETESTE).
+    status=2/5 retêm no eContador (vermelho) — não usar.
   - CPF como integer
   - numero=0 ou ausente: OMITIR
   - Datas nulas: OMITIR campo
@@ -799,7 +801,7 @@ def montar_payload(
         "funcao": {"data": {"type": "funcoes", "id": str(funcao_id)}},
         "statusadmissao": {"data": {
             "type": "tipos-status-admissao",
-            "id": defaults.get("statusadmissao_id", "2"),  # SEMPRE 2 (CLAUDE.md)
+            "id": defaults.get("statusadmissao_id", "1"),  # SEMPRE 1 — Análise/verde (validado por 5 admissões reais)
         }},
         "tipoadmissao": {"data": {
             "type": "tipos-admissao",
