@@ -39,6 +39,12 @@ Dependências:
 
 from __future__ import annotations
 
+# Carrega variáveis de ambiente do .env ANTES de qualquer outro import
+# que possa depender delas (anthropic.Anthropic() lê ANTHROPIC_API_KEY na
+# instanciação, GmailClient lê GMAIL_TOKEN, EContadorAPI recebe ECONTADOR_TOKEN).
+from dotenv import load_dotenv
+load_dotenv()
+
 import base64
 import json
 import logging
@@ -52,7 +58,6 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from dotenv import load_dotenv
 
 import anthropic
 
@@ -67,8 +72,6 @@ from googleapiclient.discovery import build
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
-
-load_dotenv()
 
 ROOT = Path(__file__).parent
 CONFIG_FILE = ROOT / "config.json"
