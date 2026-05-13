@@ -1,24 +1,24 @@
 """
 main.py — Pipeline de admissão automática da Crosara Contabilidade.
 
-Roda em Claude Code Routines (nuvem Anthropic), disparado por agendamento.
-Processa e-mails com label "ADMISSÃO" no Gmail.
+Roda DENTRO do Claude Code Routines como helper de I/O. O agente Claude Code
+faz a classificação/extração visual dos documentos NATIVAMENTE via tool Read
+(Vision built-in) — main.py não chama Anthropic API separadamente.
 
 Arquivos do repositório:
-  - config.json          (token, labels, email DP, defaults)
+  - config.json          (placeholders; tokens reais vêm de env vars)
   - lookups.json         (enums + defaults_pipeline + workarounds de bugs)
   - departamentos.json   (mapa CNPJ → modo unico/multiplo)
-  - CLAUDE.md            (regras de negócio + bugs documentados)
+  - CLAUDE.md            (instruções pro agente — fluxo, regras, bugs)
 
-Fluxo (8 passos do CLAUDE.md):
-  1. Busca emails ADMISSÃO sem labels processado/pendente
-  2. Baixa e classifica anexos via Claude Vision
-  3. Extrai campos dos documentos
-  4. Resolve empresa via CNPJ → /empresas?filter[cpfcnpj]=
-  5. Resolve departamento via departamentos.json (modo unico/multiplo)
-  6. Resolve função via /funcoes + fuzzy match (>80%=usa, 40-80%=pendente, <40%=pendente)
-  7. Monta + posta payload em /candidatos
-  8. Notifica DP por email (sucesso ou pendência) + aplica label
+Fluxo orquestrado pelo Claude Code:
+  1. `python main.py fetch` → busca emails, baixa anexos pra /tmp/admissao/<msg_id>/
+     e imprime JSON com paths + metadados
+  2. Claude Code lê cada arquivo com a tool Read (Vision nativo) e extrai campos
+  3. `python main.py resolve <cnpj> <cargo> [<depto_hint>]` → resolve empresa/depto/funcao
+  4. Claude Code monta o payload (seguindo CLAUDE.md) e grava em /tmp/admissao/<msg_id>/payload.json
+  5. `python main.py post /tmp/.../payload.json` → POSTa em /candidatos
+  6. `python main.py finalizar <msg_id> sucesso|pendente ...` → label + email DP
 
 Regras críticas (CLAUDE.md + lookups.json):
   - statusadmissao SEMPRE "1" (Análise — verde, desce DIRETO pro Alterdata).
@@ -34,14 +34,13 @@ Regras críticas (CLAUDE.md + lookups.json):
   - diascontratoexperiencia: 30 (default)
 
 Dependências:
-  pip install httpx python-dotenv anthropic google-auth google-auth-oauthlib google-api-python-client
+  pip install httpx python-dotenv google-auth google-auth-oauthlib google-api-python-client google-auth-httplib2
 """
 
 from __future__ import annotations
 
 # Carrega variáveis de ambiente do .env ANTES de qualquer outro import
-# que possa depender delas (anthropic.Anthropic() lê ANTHROPIC_API_KEY na
-# instanciação, GmailClient lê GMAIL_TOKEN, EContadorAPI recebe ECONTADOR_TOKEN).
+# que possa depender delas (GmailClient lê GMAIL_TOKEN, EContadorAPI recebe ECONTADOR_TOKEN).
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -59,11 +58,11 @@ from typing import Any
 
 import httpx
 
-import anthropic
-
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
+import google_auth_httplib2
+import httplib2
 
 
 # ============================================================
@@ -84,8 +83,6 @@ GMAIL_SCOPES = [
     "https://www.googleapis.com/auth/gmail.modify",
     "https://www.googleapis.com/auth/gmail.send",
 ]
-
-CLAUDE_MODEL = "claude-sonnet-4-6"
 
 # Match fuzzy de função (CLAUDE.md passo 6)
 FUNCAO_CONFIANCA_ALTA = 0.80
@@ -150,10 +147,15 @@ def carregar_config() -> Config:
     raw = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
     # Tolerar typo "ecotador" e versão correta "econtador"
     api_cfg = raw.get("ecotador") or raw.get("econtador") or {}
-    token = api_cfg.get("token") or os.getenv("ECONTADOR_TOKEN")
+    # Token: usar config.json se preenchido com valor real; senão fallback pra env
+    # (config.json:token = "SEU_TOKEN_AQUI" é placeholder, não vale como token real)
+    token = api_cfg.get("token")
     if not token or token == "SEU_TOKEN_AQUI":
+        token = os.getenv("ECONTADOR_TOKEN")
+    if not token:
         raise ValueError(
-            "Token eContador ausente — configure config.json:ecotador.token ou .env:ECONTADOR_TOKEN"
+            "Token eContador ausente — configure ECONTADOR_TOKEN no ambiente "
+            "(secret do Routine ou .env local)"
         )
     gmail = raw.get("gmail", {})
     return Config(
@@ -366,7 +368,13 @@ class GmailClient:
             scopes=data.get("scopes") or GMAIL_SCOPES,
         )
 
-        # Auto-refresh se expirado
+        # SSL: usar bundle de CAs do sistema (corrige erros de cadeia em alguns
+        # ambientes de cloud — em particular Routines/Linux containers).
+        ca_certs_path = "/etc/ssl/certs/ca-certificates.crt"
+        http_args = {"ca_certs": ca_certs_path} if os.path.exists(ca_certs_path) else {}
+        http = httplib2.Http(**http_args)
+
+        # Auto-refresh se expirado (passa o http já configurado pra reuso do CA bundle)
         if creds.expired and creds.refresh_token:
             log.info("Token Gmail expirado — fazendo refresh automático...")
             try:
@@ -378,7 +386,10 @@ class GmailClient:
                     "Refresh_token pode estar revogado — regere o GMAIL_TOKEN."
                 )
 
-        self.service = build("gmail", "v1", credentials=creds, cache_discovery=False)
+        authed_http = google_auth_httplib2.AuthorizedHttp(creds, http=http)
+        self.service = build(
+            "gmail", "v1", http=authed_http, cache_discovery=False
+        )
 
     def _label_id(self, nome: str) -> str | None:
         labels = self.service.users().labels().list(userId="me").execute().get("labels", [])
@@ -458,116 +469,63 @@ class GmailClient:
 
 
 # ============================================================
-# Cliente Anthropic (Vision)
+# Download de anexos pra /tmp (consumido pelo Claude Code Vision nativo)
 # ============================================================
 
-PROMPT_CLASSIFICAR = """Você classifica documentos brasileiros de admissão trabalhista.
-Olhe a imagem e responda APENAS uma tag (sem texto extra):
+import shutil
+import tempfile
 
-RG, CNH, CPF, CTPS, PIS_PASEP, TITULO_ELEITOR, COMPROVANTE_RESIDENCIA,
-CERTIDAO_NASCIMENTO, CERTIDAO_CASAMENTO, FICHA_ADMISSAO,
-ASO_ATESTADO_OCUPACIONAL, OUTRO
-"""
+TMP_BASE = Path(tempfile.gettempdir()) / "admissao"
 
 
-def prompt_extrair(tipo: str) -> str:
-    return f"""Você extrai dados de documentos brasileiros de admissão.
-Esta imagem é do tipo: {tipo}.
+def baixar_anexos_pra_tmp(gmail: "GmailClient", msg: dict) -> dict:
+    """Baixa anexos do email e salva em /tmp/admissao/{msg_id}/.
 
-Retorne APENAS um objeto JSON válido (sem markdown, sem comentários).
-Se um campo não for legível, OMITA a chave (NUNCA use null/string vazia).
-Datas no formato YYYY-MM-DD.
-
-Chaves esperadas por tipo:
-
-  RG: {{ "numero", "data_emissao", "orgao_emissor", "uf" }}
-  CNH: {{ "numero", "categoria", "data_emissao", "validade",
-         "primeira_emissao", "orgao_emissor", "uf" }}
-  CPF: {{ "numero" }}
-  CTPS: {{ "numero", "serie", "uf", "data_emissao" }}
-  PIS_PASEP: {{ "numero", "data_emissao" }}
-  TITULO_ELEITOR: {{ "numero", "zona", "secao" }}
-  COMPROVANTE_RESIDENCIA: {{ "cep", "rua", "numero", "complemento",
-                              "bairro", "cidade", "uf" }}
-  CERTIDAO_NASCIMENTO ou CERTIDAO_CASAMENTO: {{
-      "nome_completo", "nascimento", "nome_mae", "nome_pai",
-      "municipio_nascimento", "uf_nascimento", "estado_civil", "sexo"
-  }}
-  FICHA_ADMISSAO: {{
-      "nome", "cpf", "admissao", "cargo", "salario",
-      "cnpj_empresa", "departamento", "primeiro_emprego",
-      "possui_deficiencia", "escolaridade", "banco", "agencia", "conta",
-      "tipo_conta", "telefone", "celular", "email"
-  }}
-  ASO_ATESTADO_OCUPACIONAL: {{ "data_aso", "resultado", "sexo" }}
-"""
-
-
-class ClaudeVision:
-    def __init__(self):
-        self.client = anthropic.Anthropic()
-
-    def _img_block(self, data: bytes, mime: str) -> dict:
-        b64 = base64.standard_b64encode(data).decode("utf-8")
-        return {
-            "type": "image",
-            "source": {"type": "base64", "media_type": mime, "data": b64},
-        }
-
-    def classificar(self, data: bytes, mime: str) -> str:
-        msg = self.client.messages.create(
-            model=CLAUDE_MODEL,
-            max_tokens=20,
-            messages=[{
-                "role": "user",
-                "content": [
-                    self._img_block(data, mime),
-                    {"type": "text", "text": PROMPT_CLASSIFICAR},
-                ],
-            }],
-        )
-        return msg.content[0].text.strip().upper()
-
-    def extrair(self, data: bytes, mime: str, tipo: str) -> dict:
-        msg = self.client.messages.create(
-            model=CLAUDE_MODEL,
-            max_tokens=1024,
-            messages=[{
-                "role": "user",
-                "content": [
-                    self._img_block(data, mime),
-                    {"type": "text", "text": prompt_extrair(tipo)},
-                ],
-            }],
-        )
-        text = msg.content[0].text.strip()
-        text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.MULTILINE).strip()
-        try:
-            return json.loads(text)
-        except json.JSONDecodeError:
-            log.warning(f"Extração {tipo}: JSON inválido — {text[:200]}")
-            return {}
-
-
-# ============================================================
-# Consolidação de campos extraídos
-# ============================================================
-
-def consolidar_campos(documentos: list[dict]) -> dict:
-    """Mescla dados de múltiplos documentos.
-
-    Estratégia: ficha de admissão tem prioridade pros campos contratuais.
-    Outros documentos preenchem o resto sem sobrescrever.
+    Retorna metadata pro Claude Code consumir:
+      {
+        "msg_id": str,
+        "remetente": str,
+        "assunto": str,
+        "anexos": [{"path": str, "filename": str, "mime": str, "size": int}, ...],
+        "tmp_dir": str,
+      }
     """
-    ordem = sorted(documentos, key=lambda d: 0 if d.get("_tipo") != "FICHA_ADMISSAO" else 1)
-    out: dict = {}
-    for doc in ordem:
-        for k, v in doc.items():
-            if k.startswith("_") or v in (None, "", [], {}):
-                continue
-            if k not in out or doc.get("_tipo") == "FICHA_ADMISSAO":
-                out[k] = v
-    return out
+    msg_id = msg["id"]
+    tmp_dir = TMP_BASE / msg_id
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+
+    # Cabeçalhos básicos
+    headers = {h["name"].lower(): h["value"] for h in msg["payload"].get("headers", [])}
+    remetente = headers.get("from", "")
+    assunto = headers.get("subject", "")
+
+    anexos = gmail.baixar_anexos(msg)
+    saved = []
+    for anexo in anexos:
+        safe_name = re.sub(r"[^\w\.\-]", "_", anexo["filename"])
+        path = tmp_dir / safe_name
+        path.write_bytes(anexo["data"])
+        saved.append({
+            "path": str(path),
+            "filename": anexo["filename"],
+            "mime": anexo["mime"],
+            "size": len(anexo["data"]),
+        })
+
+    return {
+        "msg_id": msg_id,
+        "remetente": remetente,
+        "assunto": assunto,
+        "anexos": saved,
+        "tmp_dir": str(tmp_dir),
+    }
+
+
+def limpar_tmp_email(msg_id: str) -> None:
+    """Remove o diretório temporário de um email já processado."""
+    tmp_dir = TMP_BASE / msg_id
+    if tmp_dir.exists():
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 # ============================================================
@@ -981,179 +939,287 @@ def email_pendencia(motivo: str, dados: dict) -> tuple[str, str]:
 
 
 # ============================================================
-# Processamento de 1 email
+# Subcomandos CLI (consumidos pelo orquestrador Claude Code)
 # ============================================================
+#
+# Fluxo:
+#   1. `python main.py fetch`
+#        → busca emails ADMISSÃO sem labels processado/pendente,
+#          baixa anexos pra /tmp/admissao/<msg_id>/,
+#          imprime JSON em stdout com paths + metadados.
+#        Claude Code então lê cada arquivo via tool Read (Vision nativo),
+#        classifica e extrai os campos.
+#
+#   2. `python main.py resolve <cnpj> <cargo> [<depto_hint>]`
+#        → resolve empresa/departamento/funcao IDs.
+#        Imprime JSON: {empresa_id, empresa_attrs, depto_id, funcao_id, confianca, ...}.
+#
+#   3. `python main.py post <payload.json>`
+#        → POSTa payload em /candidatos.
+#        Imprime JSON: {ok: bool, candidato_id|erro, body_erro}.
+#
+#   4. `python main.py finalizar <msg_id> <sucesso|pendente> [--candidato ID] [--motivo "texto"] [--dados-json file]`
+#        → aplica label e envia email pro DP.
+#
+# Todos os comandos imprimem JSON em stdout (orquestrador consome).
+# Logs operacionais vão pro stderr (não interferem no JSON).
 
-def processar_email(
-    msg: dict,
-    gmail: GmailClient,
-    vision: ClaudeVision,
-    api: EContadorAPI,
-    config: Config,
-    lookups: dict,
-    departamentos_cfg: dict,
-    funcoes_cache: list[dict],
-) -> None:
-    msg_id = msg["id"]
-    log.info(f"📧 Processando email {msg_id}")
 
-    # Passo 2: anexos
-    anexos = gmail.baixar_anexos(msg)
-    if not anexos:
-        raise ValueError("Email sem anexos PDF/imagem")
-    log.info(f"   {len(anexos)} anexo(s) baixado(s)")
-
-    # Passo 3: classificar + extrair
-    documentos: list[dict] = []
-    for anexo in anexos:
+def _stderr_logging() -> None:
+    """Move logging pra stderr — stdout fica reservado pro JSON do subcomando."""
+    for h in logging.getLogger().handlers:
         try:
-            tipo = vision.classificar(anexo["data"], anexo["mime"])
-            log.info(f"   📄 {anexo['filename']}: {tipo}")
-            if tipo in ("OUTRO", ""):
-                continue
-            dados = vision.extrair(anexo["data"], anexo["mime"], tipo)
-            dados["_tipo"] = tipo
-            dados["_arquivo"] = anexo["filename"]
-            documentos.append(dados)
+            h.stream = sys.stderr  # type: ignore[attr-defined]
+        except AttributeError:
+            pass
+
+
+def _print_json(obj: Any) -> None:
+    print(json.dumps(obj, ensure_ascii=False, indent=2))
+
+
+def cmd_fetch() -> int:
+    """Baixa anexos dos emails pendentes e imprime metadados pro Claude Code."""
+    _stderr_logging()
+    config = carregar_config()
+    gmail = GmailClient()
+
+    emails = gmail.buscar_emails_pendentes(
+        config.label_entrada, config.label_processado, config.label_pendente
+    )
+    log.info(f"📥 {len(emails)} email(s) pendente(s)")
+
+    resultado = []
+    for msg in emails:
+        try:
+            info = baixar_anexos_pra_tmp(gmail, msg)
+            resultado.append(info)
+            log.info(f"   {msg['id']}: {len(info['anexos'])} anexo(s) → {info['tmp_dir']}")
         except Exception as e:
-            log.warning(f"   Falha em {anexo['filename']}: {e}")
+            log.exception(f"   {msg['id']}: falha no download — {e}")
+            resultado.append({"msg_id": msg["id"], "erro": str(e)})
 
-    if not documentos:
-        raise ValueError("Nenhum documento foi classificado/extraído com sucesso")
+    _print_json({"emails": resultado, "total": len(resultado)})
+    return 0
 
-    campos = consolidar_campos(documentos)
-    log.info(f"   Campos extraídos: {sorted(campos.keys())[:12]}")
 
-    # Validações mínimas (CLAUDE.md regra: salário obrigatório sem default)
-    obrigatorios = ["nome", "cpf", "admissao", "salario"]
-    faltando = [c for c in obrigatorios if not campos.get(c)]
-    if faltando:
-        raise ValueError(f"Campos essenciais ausentes: {faltando}")
+def cmd_resolve(args: list[str]) -> int:
+    """resolve <cnpj> <cargo> [<depto_hint>]"""
+    _stderr_logging()
+    if len(args) < 2:
+        print("uso: main.py resolve <cnpj> <cargo> [<depto_hint>]", file=sys.stderr)
+        return 64
 
-    # Passo 4: empresa
-    cnpj = campos.get("cnpj_empresa")
-    if not cnpj:
-        raise ValueError("CNPJ da empresa não foi extraído da ficha")
-    empresa_id, empresa_attrs = api.resolver_empresa(cnpj)
-    if not empresa_id:
-        raise ValueError(f"CNPJ {cnpj} não encontrado no eContador")
-    log.info(f"   🏢 Empresa: {empresa_id} ({empresa_attrs.get('nome', '?')})")
+    cnpj = args[0]
+    cargo = args[1]
+    depto_hint = args[2] if len(args) >= 3 else None
 
-    # Passo 5: departamento
-    deptos_api = api.listar_departamentos_empresa(empresa_id)
-    depto_ficha = campos.get("departamento")
-    depto_id, depto_msg = resolver_departamento(cnpj, departamentos_cfg, deptos_api, depto_ficha)
-    if depto_msg != "ok":
-        if depto_id is None and (lookups.get("defaults_pipeline") or {}).get("aceitar_sem_departamento", True):
-            log.warning(f"   ⚠ Departamento não resolvido: {depto_msg} — seguindo sem")
-        else:
-            raise ValueError(f"Departamento: {depto_msg}")
-    if depto_id:
-        log.info(f"   🗂 Departamento: {depto_id}")
+    config = carregar_config()
+    lookups = carregar_lookups()
+    departamentos_cfg = carregar_departamentos()
+    api = EContadorAPI(config.base_url, config.token)
 
-    # Passo 6: função (CLAUDE.md fuzzy)
-    funcao_id, confianca, fmsg = resolver_funcao(funcoes_cache, campos.get("cargo"))
-    if fmsg != "ok":
-        raise ValueError(f"Função: {fmsg}")
-    log.info(f"   💼 Função: {funcao_id} ({confianca:.0%})")
+    try:
+        empresa_id, empresa_attrs = api.resolver_empresa(cnpj)
+        if not empresa_id:
+            _print_json({"ok": False, "erro": f"CNPJ {cnpj} não encontrado em /empresas"})
+            return 1
 
-    # Passo 7: payload + POST
-    payload = montar_payload(campos, empresa_id, depto_id, funcao_id, lookups)
-    log.info(f"   📦 Payload: {len(payload['data']['attributes'])} attrs + {len(payload['data']['relationships'])} rels")
+        deptos_api = api.listar_departamentos_empresa(empresa_id)
+        depto_id, depto_msg = resolver_departamento(cnpj, departamentos_cfg, deptos_api, depto_hint)
 
+        log.info("Carregando /funcoes (~9k itens, ~15s)...")
+        funcoes = api.listar_funcoes()
+        funcao_id, confianca, fmsg = resolver_funcao(funcoes, cargo)
+
+        _print_json({
+            "ok": True,
+            "empresa": {"id": empresa_id, "attrs": empresa_attrs},
+            "departamento": {"id": depto_id, "msg": depto_msg},
+            "funcao": {"id": funcao_id, "confianca": confianca, "msg": fmsg},
+        })
+        return 0
+    finally:
+        api.close()
+
+
+def cmd_post(args: list[str]) -> int:
+    """post <payload.json>"""
+    _stderr_logging()
+    if not args:
+        print("uso: main.py post <payload.json>", file=sys.stderr)
+        return 64
+
+    payload_path = Path(args[0])
+    payload = json.loads(payload_path.read_text(encoding="utf-8"))
+
+    config = carregar_config()
     if config.dry_run:
-        log.info(f"   DRY-RUN — pulando POST")
-        log_jsonl({"msg_id": msg_id, "status": "dry_run", "payload_attrs": list(payload['data']['attributes'].keys())})
-        return
+        log.warning("⚠ DRY-RUN ATIVO — pulando POST")
+        _print_json({"ok": False, "dry_run": True, "payload_attrs": list(payload["data"]["attributes"].keys())})
+        return 0
 
-    ok, ref, body_err = api.post_candidato(payload)
+    api = EContadorAPI(config.base_url, config.token)
+    try:
+        ok, ref, body_err = api.post_candidato(payload)
+        if ok:
+            _print_json({"ok": True, "candidato_id": ref})
+            log_jsonl({"status": "sucesso", "candidato_id": ref})
+        else:
+            _print_json({"ok": False, "erro": ref, "body": body_err})
+            log_jsonl({"status": "falha_post", "motivo": ref, "body": body_err[:500]})
+        return 0 if ok else 1
+    finally:
+        api.close()
 
-    # Passo 8: notificar
-    if ok:
-        candidato_id = ref
-        log.info(f"   ✅ Candidato criado: {candidato_id}")
-        # Lista campos que o pipeline não conseguiu extrair (dos opcionais)
-        opcionais = ["nascimento", "nome_mae", "nome_pai", "municipio_nascimento", "rg_numero",
-                     "rg_data_emissao", "telefone", "celular", "email", "cep",
-                     "rua", "bairro", "cidade", "banco", "data_aso"]
-        nao_extraidos = [c for c in opcionais if not campos.get(c)]
+
+def cmd_finalizar(args: list[str]) -> int:
+    """finalizar <msg_id> <sucesso|pendente> [--candidato ID] [--motivo TEXTO]
+                  [--empresa-nome NOME] [--dados-json FILE] [--nao-extraidos a,b,c]
+                  [--payload-json FILE]"""
+    _stderr_logging()
+    if len(args) < 2:
+        print(
+            "uso: main.py finalizar <msg_id> <sucesso|pendente> [opts]",
+            file=sys.stderr,
+        )
+        return 64
+
+    msg_id = args[0]
+    status = args[1]
+    if status not in ("sucesso", "pendente"):
+        print(f"status inválido: {status} (use sucesso|pendente)", file=sys.stderr)
+        return 64
+
+    # Parse opts simples
+    opts: dict[str, str] = {}
+    i = 2
+    while i < len(args):
+        if args[i].startswith("--") and i + 1 < len(args):
+            opts[args[i][2:]] = args[i + 1]
+            i += 2
+        else:
+            i += 1
+
+    config = carregar_config()
+    gmail = GmailClient()
+
+    if status == "sucesso":
+        candidato_id = opts.get("candidato", "?")
+        payload = (
+            json.loads(Path(opts["payload-json"]).read_text(encoding="utf-8"))
+            if "payload-json" in opts else {"data": {"attributes": {}}}
+        )
+        empresa_attrs = {"nome": opts.get("empresa-nome", "?")}
+        nao_extraidos = opts.get("nao-extraidos", "").split(",") if opts.get("nao-extraidos") else []
 
         gmail.aplicar_label(msg_id, config.label_processado)
         if config.email_dp:
             assunto, corpo = email_sucesso(candidato_id, payload, empresa_attrs, nao_extraidos)
             gmail.enviar_email(config.email_dp, assunto, corpo)
-        log_jsonl({
-            "msg_id": msg_id, "status": "sucesso",
-            "candidato_id": candidato_id,
-            "empresa_id": empresa_id, "depto_id": depto_id, "funcao_id": funcao_id,
-            "campos_nao_extraidos": nao_extraidos,
-        })
+        limpar_tmp_email(msg_id)
+        log_jsonl({"msg_id": msg_id, "status": "sucesso", "candidato_id": candidato_id})
+        _print_json({"ok": True, "ação": "label processado + email DP"})
     else:
-        log.error(f"   ❌ POST falhou: {ref}\n{body_err}")
+        motivo = opts.get("motivo", "Pendência não especificada")
+        dados = (
+            json.loads(Path(opts["dados-json"]).read_text(encoding="utf-8"))
+            if "dados-json" in opts else {}
+        )
         gmail.aplicar_label(msg_id, config.label_pendente)
         if config.email_dp:
-            assunto, corpo = email_pendencia(f"{ref} — {body_err[:200]}", campos)
+            assunto, corpo = email_pendencia(motivo, dados)
             gmail.enviar_email(config.email_dp, assunto, corpo)
-        log_jsonl({"msg_id": msg_id, "status": "falha_post", "motivo": ref, "body": body_err[:500]})
+        log_jsonl({"msg_id": msg_id, "status": "pendente", "motivo": motivo})
+        _print_json({"ok": True, "ação": "label pendente + email DP"})
+
+    return 0
+
+
+def cmd_montar_payload(args: list[str]) -> int:
+    """montar-payload <campos.json> <empresa_id> <funcao_id> [<depto_id>]
+
+    Helper: lê campos extraídos pelo Claude Code, gera o payload completo
+    aplicando todas as regras de escritório (defaults, workarounds, CTPS-do-CPF
+    etc.) e imprime o JSON pra ser passado ao `post`."""
+    _stderr_logging()
+    if len(args) < 3:
+        print(
+            "uso: main.py montar-payload <campos.json> <empresa_id> <funcao_id> [<depto_id>]",
+            file=sys.stderr,
+        )
+        return 64
+    campos = json.loads(Path(args[0]).read_text(encoding="utf-8"))
+    empresa_id = args[1]
+    funcao_id = args[2]
+    depto_id = args[3] if len(args) >= 4 else None
+
+    lookups = carregar_lookups()
+    payload = montar_payload(campos, empresa_id, depto_id, funcao_id, lookups)
+    _print_json(payload)
+    return 0
 
 
 # ============================================================
 # Entrypoint
 # ============================================================
 
-def main() -> None:
-    log.info("=" * 70)
-    log.info("Pipeline Crosara — Admissão Automática V3")
-    log.info("=" * 70)
+USAGE = """Pipeline Crosara — Admissão Automática V3
+
+uso: python main.py <comando> [args]
+
+Comandos:
+  fetch
+      Busca emails ADMISSÃO pendentes, baixa anexos pra /tmp/admissao/<msg_id>/
+      e imprime JSON com paths/metadados (consumido pelo Claude Code Vision).
+
+  resolve <cnpj> <cargo> [<depto_hint>]
+      Resolve empresa/departamento/função no eContador.
+
+  montar-payload <campos.json> <empresa_id> <funcao_id> [<depto_id>]
+      Aplica regras de escritório (defaults, workarounds, CTPS-do-CPF) e
+      imprime o payload JSON:API pronto pra POSTar.
+
+  post <payload.json>
+      POSTa payload em /candidatos. Imprime ok/candidato_id ou erro.
+
+  finalizar <msg_id> <sucesso|pendente> [opts]
+      Aplica label no Gmail e envia email pro DP.
+      Sucesso:   --candidato ID --empresa-nome NOME --payload-json FILE
+                 --nao-extraidos a,b,c
+      Pendente:  --motivo "texto" --dados-json FILE
+"""
+
+
+def main() -> int:
+    if len(sys.argv) < 2:
+        print(USAGE, file=sys.stderr)
+        return 64
+
+    cmd = sys.argv[1]
+    args = sys.argv[2:]
 
     try:
-        config = carregar_config()
-        lookups = carregar_lookups()
-        departamentos_cfg = carregar_departamentos()
-    except (FileNotFoundError, ValueError, json.JSONDecodeError) as e:
-        log.error(f"Erro de configuração: {e}")
-        sys.exit(1)
-
-    if config.dry_run:
-        log.warning("⚠ DRY-RUN ATIVO (config.json) — não envia POSTs nem emails")
-
-    try:
-        gmail = GmailClient()
-        vision = ClaudeVision()
-        api = EContadorAPI(config.base_url, config.token)
+        if cmd == "fetch":
+            return cmd_fetch()
+        if cmd == "resolve":
+            return cmd_resolve(args)
+        if cmd == "montar-payload":
+            return cmd_montar_payload(args)
+        if cmd == "post":
+            return cmd_post(args)
+        if cmd == "finalizar":
+            return cmd_finalizar(args)
+        if cmd in ("-h", "--help", "help"):
+            print(USAGE)
+            return 0
+        print(f"Comando desconhecido: {cmd}\n\n{USAGE}", file=sys.stderr)
+        return 64
     except Exception as e:
-        log.error(f"Erro inicializando clientes: {e}")
-        sys.exit(2)
-
-    log.info("Carregando cache de /funcoes (~9k itens, leva ~15s)...")
-    funcoes_cache = api.listar_funcoes()
-    log.info(f"   {len(funcoes_cache)} funções carregadas")
-
-    emails = gmail.buscar_emails_pendentes(
-        config.label_entrada, config.label_processado, config.label_pendente
-    )
-    log.info(f"📥 {len(emails)} email(s) a processar")
-
-    for msg in emails:
-        try:
-            processar_email(
-                msg, gmail, vision, api, config,
-                lookups, departamentos_cfg, funcoes_cache,
-            )
-        except Exception as e:
-            log.exception(f"❌ Email {msg['id']}: {e}")
-            try:
-                gmail.aplicar_label(msg["id"], config.label_pendente)
-                if config.email_dp:
-                    assunto, corpo = email_pendencia(str(e), {})
-                    gmail.enviar_email(config.email_dp, assunto, corpo)
-            except Exception:
-                log.exception("Falha também ao notificar pendência")
-            log_jsonl({"msg_id": msg["id"], "status": "erro", "erro": str(e)})
-
-    api.close()
-    log.info("✅ Execução concluída.")
+        log.exception(f"Erro fatal em '{cmd}': {e}")
+        _print_json({"ok": False, "erro": str(e)})
+        return 1
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

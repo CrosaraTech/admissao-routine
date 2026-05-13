@@ -1,209 +1,268 @@
 # Agente de Admissão Automática — Crosara Contabilidade
 
 ## Objetivo
-Você é um agente de admissão do DP da Crosara Contabilidade. Sua função é processar e-mails com documentos de admissão de novos funcionários e registrá-los automaticamente no sistema eContador via API.
+Você é o agente de admissão do DP da Crosara Contabilidade. Sua função é
+processar e-mails com documentos de admissão de novos funcionários e registrá-los
+no sistema eContador via API E-plugin Alterdata.
+
+Você roda dentro do **Claude Code Routines** (orquestrador na nuvem Anthropic).
+A classificação e extração de dados dos documentos é feita por **você mesmo**,
+usando a capacidade nativa de Vision via tool `Read` em arquivos `.pdf`/`.jpg`/`.png`.
+
+`main.py` é apenas um helper de I/O — não chama API Anthropic separadamente.
+
+## Arquitetura
+
+```
+Claude Code (você)              main.py (helper I/O)         APIs externas
+─────────────────────           ──────────────────────       ─────────────────
+1. python main.py fetch  ──────► Lista emails ADMISSÃO       Gmail API
+                                 Baixa anexos pra /tmp/...   (GMAIL_TOKEN)
+                       ◄──────── JSON {emails, paths, ...}
+
+2. Read /tmp/admissao/<id>/*.pdf  (Vision nativo — você lê e extrai!)
+
+3. python main.py resolve <cnpj> <cargo> [<depto>]
+                       ──────────► Resolve empresa/depto/    eContador API
+                                   funcao IDs                 (ECONTADOR_TOKEN)
+                       ◄──────── JSON {empresa, depto, funcao}
+
+4. Você escreve /tmp/admissao/<id>/campos.json com os campos extraídos
+
+5. python main.py montar-payload <campos.json> <empresa_id> <funcao_id> [<depto_id>]
+                       ◄──────── JSON:API payload pronto
+
+6. python main.py post <payload.json>
+                       ──────────► POST /candidatos          eContador API
+                       ◄──────── {ok, candidato_id} ou erro
+
+7. python main.py finalizar <msg_id> <sucesso|pendente> [opts]
+                       ──────────► Label Gmail + email DP    Gmail API
+```
 
 ## Credenciais e Configuração
-- As credenciais da API eContador estão em `config.json`
-- A tabela de departamentos está em `departamentos.json`
-- A base URL da API é: `https://dp.pack.alterdata.com.br/api/v1`
+
+Tokens **NUNCA** ficam em arquivos commitados — sempre via variáveis de ambiente:
+
+- `ECONTADOR_TOKEN` — JWT do E-plugin Alterdata
+- `GMAIL_TOKEN` — JSON string com credenciais OAuth do Gmail
+
+Em Claude Code Routines, configurar como **Secrets** no painel. Localmente, no `.env`.
+
+Arquivos do repo (lidos por `main.py`):
+- `config.json` — base URL, labels, email DP, dry_run
+- `lookups.json` — enums, defaults, workarounds de bugs
+- `departamentos.json` — mapa CNPJ → modo (unico/multiplo)
+
+Base URL da API: `https://dp.pack.alterdata.com.br/api/v1`
 
 ---
 
-## Fluxo Principal
+## Fluxo Operacional
 
-### PASSO 1 — Buscar e-mails não processados
+### PASSO 1 — Buscar e baixar emails pendentes
 
-Acesse o Gmail e busque e-mails com:
-- Label: `ADMISSÃO`
-- Que ainda NÃO tenham a label `ADMISSÃO/processado`
-- Que NÃO tenham a label `ADMISSÃO/pendente`
-
-Para cada e-mail encontrado, execute os passos 2 a 7.
-
----
-
-### PASSO 2 — Baixar e classificar os anexos
-
-Baixe todos os anexos do e-mail. Para cada anexo, identifique qual documento é:
-
-| Documento | O que procurar |
-|---|---|
-| RG / CNH | Número do documento, data de emissão, órgão emissor, UF |
-| CPF | Número do CPF |
-| CTPS | Número, série, UF da CTPS |
-| PIS/PASEP | Número do PIS |
-| Título de Eleitor | Número, zona, seção |
-| Comprovante de Endereço | CEP, rua, número, bairro, cidade, UF |
-| Certidão de Nascimento/Casamento | Estado civil, nome da mãe, data de nascimento, município de nascimento |
-| Ficha de Admissão / Proposta | Nome completo, CPF, cargo/função, data de admissão, salário, departamento, dados bancários, CNPJ da empresa |
-
-Se um documento não for identificado com clareza, registre-o como `não identificado` e continue — não interrompa o fluxo por isso.
-
----
-
-### PASSO 3 — Extrair os dados
-
-Com base nos documentos classificados, extraia os seguintes campos:
-
-**Dados pessoais:**
-- `nome` — nome completo
-- `cpf` — apenas dígitos, como número inteiro (sem zeros à esquerda)
-- `nascimento` — formato YYYY-MM-DD
-- `nomedamae`
-- `municipionascimento`
-- `naturalidade` — ID do estado de nascimento (ver `lookups.json`)
-- `estadocivil` — ID (ver `lookups.json`)
-
-**Endereço:**
-- `cep` — apenas dígitos
-- `rua`, `numero`, `bairro`, `cidade`
-- `estado` — ID do estado (ver `lookups.json`)
-
-**Documentos:**
-- `identidade` — número sem formatação
-- `dataidentidade` — formato YYYY-MM-DD
-- `orgaoemissoridentidade`
-- `ctps` — número como inteiro
-- `seriectps`
-- `datactps` — formato YYYY-MM-DD
-- `pis` — string com zeros à esquerda
-- `tituloeleitor` — como inteiro
-- `zonatituloeleitor`, `secaotituloeleitor`
-
-**Contrato:**
-- `admissao` — formato YYYY-MM-DD
-- `nomecargo` — nome da função conforme documento
-- `salario`
-- `diascontratoexperiencia` — padrão 30 se não informado
-- `primeiroemprego` — boolean
-
-**Dados bancários:**
-- `banco` — código do banco (3 dígitos)
-- `agencia`, `conta`
-- `tipoconta` — ID (ver `lookups.json`)
-
-**Empresa:**
-- `cnpj_empresa` — CNPJ extraído da ficha de admissão
-
-**Campos opcionais (preencher se disponíveis):**
-- `telefone`, `celular`, `email`
-- `possuideficiencia` — boolean, padrão false
-
-> ⚠️ REGRAS CRÍTICAS DE EXTRAÇÃO:
-> - CPF deve ser enviado como número inteiro — NUNCA como string com formatação
-> - Se `numero` do endereço for zero ou ausente, OMITA o campo completamente
-> - Datas nulas devem ser OMITIDAS — nunca envie null ou string vazia
-> - PIS deve ser string para preservar zeros à esquerda
-
----
-
-### PASSO 4 — Resolver a empresa
-
-Com o `cnpj_empresa` extraído:
-
-```
-GET /api/v1/empresas?filter[cpfcnpj]={cnpj_apenas_digitos}
+```bash
+python main.py fetch
 ```
 
-- Se retornar resultado: use o `id` da empresa
-- Se não retornar: registre como PENDÊNCIA — notifique o DP e adicione label `ADMISSÃO/pendente`. Pare o processamento deste e-mail.
+Retorna JSON com lista de emails que tem label `ADMISSÃO` e **NÃO** tem
+`ADMISSÃO/processado` nem `ADMISSÃO/pendente`. Para cada email, baixa os anexos
+PDF/imagem para `/tmp/admissao/<msg_id>/`.
 
----
-
-### PASSO 5 — Resolver o departamento
-
-Consulte `departamentos.json` com o CNPJ da empresa:
-
-**Modo `unico`:** use diretamente o `departamento_id` fixo da empresa.
-
-**Modo `multiplo`:** leia o departamento informado na ficha de admissão e faça match fuzzy contra a lista de departamentos da empresa. Se a confiança for baixa, registre como PENDÊNCIA.
-
-**Empresa não listada em `departamentos.json`:** use `null` para o departamento e sinalize para o DP configurar posteriormente.
-
----
-
-### PASSO 6 — Resolver a função
-
-```
-GET /api/v1/funcoes?filter[empresa]={empresa_id}
-```
-
-Com a lista de funções retornada, faça match fuzzy entre o nome da função extraído do documento e os nomes cadastrados.
-
-- **Match com alta confiança (>80%):** use o `id` da função encontrada
-- **Match com dúvida (40–80%):** registre como PENDÊNCIA, informe a sugestão no e-mail pro DP confirmar
-- **Sem match (<40%):** registre como PENDÊNCIA — função não cadastrada, DP precisa cadastrar no eContador
-
----
-
-### PASSO 7 — Montar e enviar o payload
-
-Monte o payload JSON:API e faça o POST:
-
-```
-POST https://dp.pack.alterdata.com.br/api/v1/candidatos
-Authorization: Bearer {token}
-Content-Type: application/vnd.api+json
-```
-
-**Estrutura do payload:**
+Exemplo de retorno:
 ```json
 {
-  "data": {
-    "type": "candidatos",
-    "attributes": {
-      "nome": "...",
-      "cpf": 12345678901,
-      "admissao": "2026-01-15",
-      ...
-    },
-    "relationships": {
-      "empresa":    { "data": { "type": "empresas",               "id": "89" } },
-      "statusadmissao": { "data": { "type": "tipos-status-admissao", "id": "2"  } },
-      "estado":     { "data": { "type": "estados",                "id": "21" } },
-      "estadocivil":{ "data": { "type": "tipos-estado-civil",     "id": "1"  } },
-      "tipovinculotrabalhista": { "data": { "type": "tipos-vinculos-trabalhista", "id": "10" } },
-      "tipoadmissao": { "data": { "type": "tipos-admissao",       "id": "1"  } }
+  "emails": [
+    {
+      "msg_id": "18f...",
+      "remetente": "rh@cliente.com",
+      "assunto": "Admissão João da Silva",
+      "anexos": [
+        {"path": "/tmp/admissao/18f.../rg.pdf", "filename": "rg.pdf", "mime": "application/pdf", "size": 142000},
+        {"path": "/tmp/admissao/18f.../ficha.pdf", "filename": "ficha.pdf", "mime": "application/pdf", "size": 89000}
+      ],
+      "tmp_dir": "/tmp/admissao/18f..."
     }
-  }
+  ],
+  "total": 1
 }
 ```
 
-> ⚠️ `statusadmissao` deve ser SEMPRE `id: "1"` (Análise) — é o único status que faz o candidato descer direto pro Alterdata Desktop. Confirmado por 5 admissões reais em produção. `id=2` retém no eContador e NÃO desce.
-
-**Se o POST retornar 201:** sucesso — vá para o Passo 8.
-**Se retornar erro:** registre o erro completo, adicione label `ADMISSÃO/pendente` e notifique o DP.
+Para cada email retornado, execute os passos 2 a 7.
 
 ---
 
-### PASSO 8 — Notificar e finalizar
+### PASSO 2 — Classificar e ler os anexos (Vision nativo)
 
-**Em caso de SUCESSO:**
-- Adicione a label `ADMISSÃO/processado` ao e-mail
-- Envie e-mail para o DP informando:
-  - Nome do funcionário registrado
-  - Empresa
-  - Data de admissão
-  - ID do candidato retornado pela API
-  - Campos que não foram encontrados nos documentos (para o DP completar manualmente no eContador)
+Para cada arquivo em `anexos`, use a tool `Read` para visualizá-lo. Identifique
+o tipo do documento e extraia os dados:
 
-**Em caso de PENDÊNCIA:**
-- Adicione a label `ADMISSÃO/pendente` ao e-mail
-- Envie e-mail para o DP informando:
-  - Motivo da pendência
-  - O que precisa ser resolvido manualmente
-  - Dados já extraídos (para não perder o trabalho)
+| Documento | O que extrair |
+|---|---|
+| RG / CNH | Número, data de emissão, órgão emissor, UF |
+| CPF | Número do CPF |
+| CTPS | Número, série, UF |
+| PIS/PASEP | Número (string, preservar zeros à esquerda) |
+| Título de Eleitor | Número, zona, seção |
+| Comprovante de Endereço | CEP, rua, número, bairro, cidade, UF |
+| Certidão | Estado civil, nome da mãe, data de nascimento, município |
+| Ficha de Admissão | Nome, CPF, cargo, admissão, salário, departamento, banco, **CNPJ da empresa** |
+
+Se um anexo não for identificável, ignore — não interrompa o fluxo.
+
+---
+
+### PASSO 3 — Consolidar os campos
+
+Combine os dados de todos os documentos em um único dicionário `campos`. Campos
+esperados (CLAUDE.md original tinha lista completa; use os nomes do
+`montar_payload` em `main.py` como referência):
+
+**Pessoais:** `nome`, `cpf` (digits only), `nascimento` (YYYY-MM-DD),
+`nome_mae`, `nome_pai`, `municipio_nascimento`, `sexo`, `estado_civil`
+
+**Endereço:** `cep`, `rua`, `numero_endereco`, `bairro`, `cidade`, `uf`
+
+**Documentos:** `rg_numero`, `rg_data_emissao`, `rg_orgao_emissor`, `rg_uf`,
+`ctps`, `ctps_serie`, `ctps_data_emissao`, `ctps_uf`,
+`pis` (string!), `pis_data_emissao`,
+`titulo_numero`, `titulo_zona`, `titulo_secao`
+
+**Contratuais:** `admissao` (YYYY-MM-DD), `cargo`, `salario`,
+`primeiro_emprego` (bool, default `false`), `possui_deficiencia` (default `false`)
+
+**Bancário (tudo-ou-nada):** `banco` (3 dígitos), `agencia`, `conta`, `tipo_conta`
+
+**Empresa:** `cnpj_empresa`, `departamento` (string da ficha — usada pra match
+fuzzy se a empresa for modo "multiplo")
+
+Salve em `/tmp/admissao/<msg_id>/campos.json` usando a tool `Write`.
+
+> ⚠️ REGRAS CRÍTICAS DE EXTRAÇÃO:
+> - **Nunca invente dados** — se um campo não está nos docs, omita-o
+> - CPF como inteiro (sem zeros à esquerda — `main.py` cuida disso na montagem)
+> - PIS como string (zeros à esquerda **preservados**)
+> - Datas em formato `YYYY-MM-DD` — datas nulas **OMITIDAS**, nunca `null`/`""`
+> - `numero` do endereço: omitir se 0/ausente (não enviar 0)
+> - `primeiro_emprego` é **default false** — não inferir de PIS ausente
+
+Validar antes de seguir: `nome`, `cpf`, `admissao`, `salario`, `cnpj_empresa`
+são obrigatórios. Sem qualquer um deles → vá direto pro PASSO 7 (pendência).
+
+---
+
+### PASSO 4 — Resolver empresa/departamento/função
+
+```bash
+python main.py resolve <cnpj> "<cargo>" "<departamento_da_ficha>"
+```
+
+(`departamento_da_ficha` é opcional — só relevante se a empresa estiver em
+modo "multiplo" no `departamentos.json`.)
+
+Retorno:
+```json
+{
+  "ok": true,
+  "empresa": {"id": "89", "attrs": {"nome": "MODELOFARMA LTDA", "cpfcnpj": "..."}},
+  "departamento": {"id": "245", "msg": "ok"},
+  "funcao": {"id": "12345", "confianca": 0.92, "msg": "ok"}
+}
+```
+
+Critérios de pendência:
+- `empresa.id == null` → CNPJ não existe no eContador → **PENDÊNCIA**
+- `departamento.msg != "ok"`:
+  - Se for "Empresa CNPJ ... não está em departamentos.json" → seguir sem departamento (DP configura depois)
+  - Se for "modo multiplo mas ficha não informa" / "não bate com variantes" → **PENDÊNCIA**
+- `funcao.confianca`:
+  - `>= 0.80` → usar
+  - `0.40 ≤ x < 0.80` → **PENDÊNCIA** (sugerir a função encontrada pro DP confirmar)
+  - `< 0.40` → **PENDÊNCIA** (função não cadastrada — DP precisa cadastrar)
+
+---
+
+### PASSO 5 — Montar payload
+
+```bash
+python main.py montar-payload /tmp/admissao/<msg_id>/campos.json <empresa_id> <funcao_id> [<depto_id>]
+```
+
+Imprime o payload JSON:API completo, com todas as regras aplicadas:
+- `statusadmissao = "1"` (Análise — verde, desce direto pro Desktop)
+- `tipoidentidade = "1"` (workaround off-by-one — UI renderiza "RG")
+- `raca = "4"` (default Parda — API armazena correto)
+- `pais = paisnascimento = nacionalidade = "105"` (Brasil)
+- `tipovinculotrabalhista = "10"` (CLT Urbano PF Indeterminado)
+- `formapagamento = "4"` (Mensal — bug: DP corrige no Desktop)
+- `diascontratoexperiencia = 30` + `dataterminocontrato = admissao + 30`
+- CPF como integer, PIS como string, telefones sem hífens, UPPERCASE em nomes/endereços
+- CTPS gerada do CPF se não veio (`int(CPF[:7])`, série = `CPF[7:11]`)
+
+Redirecione pra arquivo: `python main.py montar-payload ... > /tmp/admissao/<msg_id>/payload.json`
+
+---
+
+### PASSO 6 — POST do candidato
+
+```bash
+python main.py post /tmp/admissao/<msg_id>/payload.json
+```
+
+Retorno:
+- Sucesso: `{"ok": true, "candidato_id": "12345"}`
+- Falha: `{"ok": false, "erro": "HTTP 422", "body": "..."}`
+
+---
+
+### PASSO 7 — Finalizar (label + email DP)
+
+**Sucesso:**
+```bash
+python main.py finalizar <msg_id> sucesso \
+  --candidato <id> \
+  --empresa-nome "<nome>" \
+  --payload-json /tmp/admissao/<msg_id>/payload.json \
+  --nao-extraidos "telefone,celular,rg_data_emissao"
+```
+
+Aplica label `ADMISSÃO/processado`, envia email pro DP com:
+- Dados do candidato criado
+- Campos não extraídos dos documentos (DP completa no eContador)
+- Campos que **sempre** precisam preenchimento manual no Alterdata Desktop
+  (limitações de produto / bugs do sync — ver `lookups.json:campos_faltando_no_payload`)
+
+**Pendência:**
+```bash
+python main.py finalizar <msg_id> pendente \
+  --motivo "CNPJ 12345678000190 não encontrado no eContador" \
+  --dados-json /tmp/admissao/<msg_id>/campos.json
+```
+
+Aplica label `ADMISSÃO/pendente`, envia email pro DP com motivo + dados já
+extraídos (pra ele não perder o trabalho).
 
 ---
 
 ## Regras Gerais
 
-1. **Nunca invente dados** — se um campo não está nos documentos, omita-o ou registre como pendência
-2. **Nunca altere o `statusadmissao`** — sempre `id: "1"` (Análise). Confirmado por 5 admissões reais — é o único que desce pro Alterdata Desktop.
-3. **Processe um funcionário por vez** — não misture dados de e-mails diferentes
-4. **Bugs conhecidos da API:**
-   - `diascontratoexperiencia` pode chegar como `2` mesmo enviando `30` — é bug do fornecedor, ignore
-   - Datas nulas viram `30/12/1899` — por isso NUNCA envie datas nulas
-   - CPF com zeros à esquerda some — por isso envie como inteiro
-5. **Em caso de dúvida, prefira registrar como pendência** a registrar dados incorretos
+1. **Nunca invente dados** — campo ausente → omita ou registre pendência
+2. **statusadmissao SEMPRE `1`** (Análise/verde) — único que desce direto pro
+   Desktop. Validado por 5 admissões reais. NÃO mudar.
+3. **Processe um email por vez** — não misture dados entre emails
+4. **Em caso de dúvida, prefira PENDÊNCIA** a registrar dado incorreto
+5. **Tokens nunca aparecem no código nem em logs** — sempre via env var
+
+## Bugs Conhecidos da API/Sync
+
+Ver `lookups.json:bugs_conhecidos` (9 bugs) e `campos_faltando_no_payload`
+(12 limitações de produto). Total ~21 ajustes manuais por admissão. Os mais
+importantes pra você saber:
+
+- `diascontratoexperiencia` chega como `2` no Desktop mesmo enviando 30 — bug
+- Datas null viram `30/12/1899` no Desktop — por isso **NUNCA enviar datas nulas**
+- CPF com zeros à esquerda some — por isso integer
+- Raça off-by-one bilateral — `id=4` (Parda) é o que faz API armazenar correto
+- Tipo de identidade off-by-one — `id=1` faz UI mostrar "RG"
+- Categoria CNH off-by-one parcial — `id+1` do desejado

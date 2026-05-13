@@ -2,23 +2,40 @@
 
 Pipeline de admissão automática da **Crosara Contabilidade**, projetado pra rodar em **Claude Code Routines** (nuvem Anthropic).
 
-Processa e-mails com label `ADMISSÃO` no Gmail, extrai dados via Claude Vision, monta payload JSON:API e cria candidatos via API E-plugin Alterdata.
+Processa e-mails com label `ADMISSÃO` no Gmail. O agente Claude Code lê os
+anexos com **Vision nativo** (tool `Read`), extrai os campos, monta payload
+JSON:API e cria candidatos via API E-plugin Alterdata.
+
+## Arquitetura
+
+`main.py` é um **helper de I/O** — não chama API Anthropic separadamente.
+A inteligência (classificar docs, extrair campos) é feita pelo Claude Code
+diretamente via Vision nativo. `main.py` só expõe subcomandos CLI:
+
+```
+python main.py fetch                              # baixa anexos do Gmail
+python main.py resolve <cnpj> <cargo> [<depto>]   # resolve IDs
+python main.py montar-payload <campos.json> ...   # monta payload JSON:API
+python main.py post <payload.json>                # POSTa /candidatos
+python main.py finalizar <msg_id> ...             # label Gmail + email DP
+```
+
+Veja `CLAUDE.md` pro fluxo completo passo-a-passo.
 
 ## Estrutura
 
 | Arquivo | Função |
 |---|---|
-| `main.py` | Pipeline principal (8 passos do `CLAUDE.md`) |
-| `CLAUDE.md` | Instruções operacionais do agente (regras de extração, fluxo, bugs) |
+| `main.py` | Helper de I/O (CLI com subcomandos) |
+| `CLAUDE.md` | Instruções operacionais do agente (fluxo, regras, bugs) |
 | `lookups.json` | Enums + defaults + workarounds dos bugs do produto |
 | `departamentos.json` | Mapa CNPJ → modo (único / múltiplo) |
-| `config.json` | Credenciais (token, labels Gmail, email DP) |
+| `config.json` | Configuração não-secreta (URLs, labels, email DP) |
 
 ## Pré-requisitos
 
 ```bash
-pip install httpx python-dotenv anthropic \
-    google-auth google-auth-oauthlib google-api-python-client
+pip install -r requirements.txt
 ```
 
 E **antes da primeira execução**:
@@ -41,23 +58,31 @@ E **antes da primeira execução**:
      }
      ```
      Gere via fluxo OAuth do Google Cloud Console uma vez e cole o JSON serializado.
-     O token é auto-refreshed em runtime via `refresh_token` (não precisa renovar manual).
-   - `ANTHROPIC_API_KEY` — chave da API Anthropic pra Claude Vision
+     O token é auto-refreshed em runtime via `refresh_token`.
 2. Editar `config.json`: ajustar `dp.email_notificacao`
 3. Popular `departamentos.json` com os CNPJs reais
 4. (Opcional) Setar `"dry_run": true` em `config.json` pra testar sem postar
 
 ## Como rodar
 
+Em ambiente Claude Code Routines: o agente Claude Code orquestra `main.py`
+seguindo as instruções de `CLAUDE.md`.
+
+Para teste local manual:
 ```bash
-python main.py
+python main.py fetch
+# inspecione o JSON e cada PDF baixado
+python main.py resolve 12345678000190 "Auxiliar Administrativo"
+# monte campos.json manualmente
+python main.py montar-payload campos.json 89 12345 > payload.json
+python main.py post payload.json
 ```
 
 Logs append-only em `admissao_log.json` (NDJSON).
 
 ## Regras críticas implementadas
 
-Todas as 21 correções/limitações documentadas em `CLAUDE.md` e `lookups.json:bugs_conhecidos`:
+Todas as 21+ correções/limitações documentadas em `CLAUDE.md` e `lookups.json:bugs_conhecidos`:
 
 - `statusadmissao = "1"` (Análise — desce direto pro Alterdata, validado por 5 admissões reais)
 - `tipoidentidade = "1"` (workaround off-by-one — Desktop renderiza "RG")
@@ -77,6 +102,6 @@ Ver `lookups.json:bugs_conhecidos`. 9 bugs do sync + 12 campos sem atributo no p
 
 ## Segurança
 
-- `.env`, `gmail_token.json`, `credentials.json`, `*_log.json` estão no `.gitignore`.
-- Token nunca é hard-coded — sempre lido de `.env` ou `config.json`.
-- Logs podem conter CPF/nomes — não compartilhar fora do escritório.
+- `.env`, `gmail_token.json`, `credentials.json`, `*_log.json` estão no `.gitignore`
+- Tokens (`ECONTADOR_TOKEN`, `GMAIL_TOKEN`) nunca em arquivos commitados — sempre via env var/secrets
+- Logs podem conter CPF/nomes — não compartilhar fora do escritório
