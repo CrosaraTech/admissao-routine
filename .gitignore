@@ -12,6 +12,9 @@ admissao_log.json
 *_log.json
 *.ndjson
 
+# Payloads salvos (contêm CPF, nomes, dados sensíveis)
+local-pipeline/payloads/
+
 # Bytecode
 __pycache__/
 *.py[cod]

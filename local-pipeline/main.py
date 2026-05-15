@@ -55,6 +55,7 @@ LOOKUPS_FILE = ROOT / "lookups.json"
 DEPARTAMENTOS_FILE = ROOT / "departamentos.json"
 PLANILHA_CBO = ROOT / "funcoes_cbo.xlsx"
 LOG_FILE = ROOT / "admissao_log.ndjson"
+PAYLOADS_DIR = ROOT / "payloads"
 
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -131,6 +132,47 @@ def log_jsonl(entry: dict) -> None:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     except OSError as e:
         log.warning(f"Falha escrevendo log: {e}")
+
+
+def salvar_payload(
+    msg_id: str,
+    metadados: dict,
+    payload: dict,
+    resolucao: dict | None = None,
+    resultado: dict | None = None,
+) -> Path:
+    """Salva o payload completo + contexto em payloads/<timestamp>_<msg_id>.json.
+
+    Chamado em 2 momentos:
+      1. Após montagem (antes do POST) — preserva o payload mesmo se crashar
+      2. Após resposta do POST — atualiza com candidato_id ou erro
+
+    Sobrescreve o arquivo do mesmo msg_id (a 2ª chamada inclui o resultado).
+    """
+    PAYLOADS_DIR.mkdir(exist_ok=True)
+    # Timestamp + msg_id curto pra evitar nomes gigantes
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    nome_arq = f"{ts}_{msg_id[:16]}.json"
+    arq = PAYLOADS_DIR / nome_arq
+
+    # Se já existe um arquivo desse msg_id na rodada atual, sobrescreve
+    # (vem da 1ª chamada antes do POST — atualizamos com resultado)
+    existentes = sorted(PAYLOADS_DIR.glob(f"*_{msg_id[:16]}.json"))
+    if existentes:
+        arq = existentes[-1]
+
+    doc = {
+        "timestamp": datetime.now().isoformat(),
+        "msg_id": msg_id,
+        "remetente": metadados.get("remetente", ""),
+        "assunto": metadados.get("assunto", ""),
+        "data_email": metadados.get("data", ""),
+        "resolucao": resolucao or {},
+        "resultado": resultado or {"status": "preparado", "erro": None, "candidato_id": None},
+        "payload": payload,
+    }
+    arq.write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
+    return arq
 
 
 # ============================================================
@@ -256,9 +298,31 @@ def processar_email(
         f"{len(payload['data']['relationships'])} rels"
     )
 
+    # Snapshot resolução pra auditoria (vai pro arquivo do payload)
+    resolucao = {
+        "cnpj_empresa": cnpj,
+        "empresa_id": empresa_id,
+        "razao_social": razao,
+        "departamento_id": depto_id,
+        "departamento_motivo": depto_msg,
+        "departamento_sugerido": dados.get("departamento_sugerido"),
+        "funcao_id": funcao_id,
+        "funcao_confianca": round(conf, 4),
+        "cargo_extraido": dados.get("cargo"),
+        "cbo_extraido": dados.get("cbo"),
+    }
+
+    # Salva payload antes do POST (preserva mesmo se crashar)
+    arq_payload = salvar_payload(msg_id, metadados, payload, resolucao=resolucao)
+    log.info(f"   💾 Payload salvo em {arq_payload.relative_to(ROOT)}")
+
     if config.dry_run:
         log.info("   DRY-RUN — pulando POST")
-        log_jsonl({"msg_id": msg_id, "status": "dry_run", "payload": payload})
+        salvar_payload(
+            msg_id, metadados, payload, resolucao=resolucao,
+            resultado={"status": "dry_run", "candidato_id": None, "erro": None},
+        )
+        log_jsonl({"msg_id": msg_id, "status": "dry_run", "payload_path": str(arq_payload.name)})
         return
 
     # 7. POST candidato
@@ -270,10 +334,15 @@ def processar_email(
         if config.email_dp:
             assunto, corpo_email = email_sucesso(candidato_id, payload, razao)
             gmail.enviar_email(config.email_dp, assunto, corpo_email)
+        salvar_payload(
+            msg_id, metadados, payload, resolucao=resolucao,
+            resultado={"status": "sucesso", "candidato_id": candidato_id, "erro": None},
+        )
         log_jsonl({
             "msg_id": msg_id, "status": "sucesso",
             "candidato_id": candidato_id, "empresa_id": empresa_id,
             "departamento_id": depto_id, "funcao_id": funcao_id,
+            "payload_path": str(arq_payload.name),
         })
     else:
         log.error(f"   ❌ POST falhou: {ref}\n{body_err}")
@@ -284,9 +353,15 @@ def processar_email(
                 {"payload": payload, "empresa": razao},
             )
             gmail.enviar_email(config.email_dp, assunto, corpo_email)
+        salvar_payload(
+            msg_id, metadados, payload, resolucao=resolucao,
+            resultado={"status": "falha_post", "candidato_id": None,
+                       "erro": ref, "body": body_err[:2000]},
+        )
         log_jsonl({
             "msg_id": msg_id, "status": "falha_post",
             "motivo": ref, "body": body_err[:500],
+            "payload_path": str(arq_payload.name),
         })
 
 

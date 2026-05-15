@@ -48,6 +48,7 @@ Logs append-only em `admissao_log.ndjson`.
 | `config.json` | URL base, labels, intervalo polling |
 | `.env.example` | Template de variáveis de ambiente |
 | `admissao_log.ndjson` | Log append-only NDJSON |
+| `payloads/` | Um JSON por admissão (timestamp + msg_id) — auditoria/re-envio |
 
 ## Fluxo
 
@@ -86,8 +87,48 @@ Estratégia de match:
 3. Se múltiplos com mesmo CBO ou scores próximos → repassa lista filtrada pro
    Claude desambiguar com contexto do email
 
+## Payloads salvos (auditoria)
+
+Cada admissão processada gera um arquivo em `payloads/<timestamp>_<msgid>.json`
+com o payload completo + contexto. Estrutura:
+
+```json
+{
+  "timestamp": "2026-05-15T10:30:00.123",
+  "msg_id": "18f3ab...",
+  "remetente": "rh@cliente.com",
+  "assunto": "Admissão João",
+  "data_email": "Thu, 15 May 2026 09:15:00 -0300",
+  "resolucao": {
+    "cnpj_empresa": "10560396000185",
+    "empresa_id": "89",
+    "razao_social": "MODELOFARMA LTDA",
+    "departamento_id": "1139",
+    "departamento_motivo": "ok",
+    "funcao_id": "1259",
+    "funcao_confianca": 0.92,
+    "cargo_extraido": "Operador de Caixa",
+    "cbo_extraido": ""
+  },
+  "resultado": {
+    "status": "sucesso",
+    "candidato_id": "20191",
+    "erro": null
+  },
+  "payload": { "data": { "type": "candidatos", "attributes": {...}, "relationships": {...} } }
+}
+```
+
+Útil pra:
+- Auditar o que foi enviado em cada admissão
+- Re-postar manualmente (`python -c "import json,httpx; ..."`) se POST falhou
+- Comparar resoluções entre admissões parecidas
+- Investigar bugs do sync (payload enviado vs. o que chegou no Desktop)
+
+Os arquivos ficam no `.gitignore` (têm CPF/nomes).
+
 ## Segurança
 
 - `.env` está no `.gitignore` (não commitar tokens)
-- `admissao_log.ndjson` pode conter CPF/nomes — não compartilhar
+- `admissao_log.ndjson` e `payloads/` podem conter CPF/nomes — não compartilhar
 - Tokens lidos só de env var, nunca de arquivo commitado
