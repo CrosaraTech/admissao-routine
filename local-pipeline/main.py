@@ -224,12 +224,41 @@ def email_pendencia(motivo: str, contexto: dict) -> tuple[str, str]:
     return assunto, corpo
 
 
-def email_resposta_cliente(payload: dict, faltantes: list[str]) -> str:
-    """Corpo da resposta amigável que vai pro cliente no mesmo thread.
+def _raise_pendencia(
+    erro_tecnico: str,
+    motivo_cliente: str,
+    *,
+    campos_faltando: list[str] | None = None,
+    payload_parcial: dict | None = None,
+) -> None:
+    """Levanta ValueError anotada com o que o reply pro cliente precisa.
 
-    Mostra o que já temos + lista clara do que falta. Cliente responde no
-    próprio thread com o que falta (pipeline detecta na próxima passada).
+    - erro_tecnico: vai pro log/email DP (texto curto, técnico)
+    - motivo_cliente: vai pro corpo da resposta amigável ao cliente
+    - campos_faltando: opcional, lista estruturada (caminho do validador)
+    - payload_parcial: opcional, dados que já foram extraídos
     """
+    err = ValueError(erro_tecnico)
+    err.motivo_cliente = motivo_cliente  # type: ignore[attr-defined]
+    err.campos_faltando = campos_faltando or []  # type: ignore[attr-defined]
+    err.payload_parcial = payload_parcial or {}  # type: ignore[attr-defined]
+    raise err
+
+
+def email_resposta_cliente(
+    payload: dict | None,
+    faltantes: list[str] | None,
+    motivo_livre: str | None = None,
+) -> str:
+    """Corpo da resposta amigável ao cliente no thread original.
+
+    Adapta o conteúdo ao contexto:
+      - faltantes não-vazio: lista estruturada (caminho do validador) + o
+        que já foi extraído pra cliente conferir
+      - motivo_livre: texto livre (Claude marcou _pendente, CNPJ inválido,
+        função sem match, etc.)
+    """
+    payload = payload or {}
     attrs = (payload.get("data") or {}).get("attributes") or {}
     nome = attrs.get("nome") or "este(a) candidato(a)"
 
@@ -245,24 +274,39 @@ def email_resposta_cliente(payload: dict, faltantes: list[str]) -> str:
     add("Data de Nascimento", attrs.get("nascimento"))
     add("Cargo", attrs.get("nomecargo"))
     add("Salário", attrs.get("salario"))
+    bloco_temos = "\n".join(ja_temos) or "  (ainda não conseguimos identificar dados)"
 
-    bloco_pendentes = "\n".join(f"  • {f}" for f in faltantes) or "  (todos)"
-    bloco_temos = "\n".join(ja_temos) or "  (nenhum)"
+    if faltantes:
+        bloco_pendentes = "\n".join(f"  • {f}" for f in faltantes)
+        miolo = (
+            f"Para concluirmos o cadastro de {nome}, ainda precisamos "
+            f"dos seguintes dados que não conseguimos identificar:\n\n"
+            f"⚠ Pendentes:\n{bloco_pendentes}\n\n"
+            f"✅ O que já recebemos:\n{bloco_temos}\n\n"
+        )
+    elif motivo_livre:
+        miolo = (
+            f"Recebemos sua mensagem, mas ainda não temos informação "
+            f"suficiente pra cadastrar a admissão.\n\n"
+            f"⚠ {motivo_livre}\n\n"
+            f"✅ O que já recebemos:\n{bloco_temos}\n\n"
+        )
+    else:
+        miolo = (
+            f"Recebemos sua mensagem, mas ainda não conseguimos processar "
+            f"a admissão automaticamente. Pode reenviar os documentos e "
+            f"informações do(a) candidato(a)?\n\n"
+        )
 
-    corpo = (
+    return (
         f"Olá!\n\n"
-        f"Recebemos a documentação de admissão de {nome}. "
-        f"Para concluirmos o cadastro no nosso sistema, ainda precisamos "
-        f"dos seguintes dados que não conseguimos identificar:\n\n"
-        f"⚠ Pendentes:\n{bloco_pendentes}\n\n"
-        f"✅ O que já recebemos:\n{bloco_temos}\n\n"
-        f"Por favor, responda este mesmo e-mail informando apenas o que "
-        f"está faltando — não precisa reenviar os documentos.\n\n"
+        f"{miolo}"
+        f"Por favor, responda este mesmo e-mail com o que falta — "
+        f"não precisa reenviar os documentos que já mandou.\n\n"
         f"Qualquer dúvida, é só responder.\n\n"
         f"Atenciosamente,\n"
         f"DP — Crosara Contabilidade"
     )
-    return corpo
 
 
 # ============================================================
@@ -357,23 +401,49 @@ def processar_admissao(
     log.info(f"   Corpo: {len(corpo)} chars | Anexos: {len(anexos)}")
 
     if not corpo and not anexos:
-        raise ValueError("Email sem corpo nem anexos PDF/imagem")
+        _raise_pendencia(
+            "Email sem corpo nem anexos PDF/imagem",
+            motivo_cliente=(
+                "Não recebemos nenhuma informação ou anexo nessa mensagem. "
+                "Pode reenviar os documentos do candidato (ficha de admissão, RG, "
+                "CTPS, comprovante de endereço, etc.)?"
+            ),
+        )
 
     # 2. Claude extrai os campos e devolve payload mais o cnpj/departamento sugeridos
     resposta_claude = claude.gerar_payload(corpo, metadados, anexos)
     dados = extrair_dados_consulta(resposta_claude)
 
     if dados["pendente"]:
-        raise ValueError(f"Claude marcou como pendente: {dados['motivo_pendencia']}")
+        motivo = dados["motivo_pendencia"] or "Dados insuficientes"
+        _raise_pendencia(
+            f"Claude marcou como pendente: {motivo}",
+            motivo_cliente=motivo,
+            payload_parcial=resposta_claude,
+        )
 
     cnpj = dados["cnpj_empresa"]
     if not cnpj:
-        raise ValueError("Claude não extraiu o CNPJ da empresa")
+        _raise_pendencia(
+            "Claude não extraiu o CNPJ da empresa",
+            motivo_cliente=(
+                "Não conseguimos identificar o CNPJ da empresa contratante "
+                "nos documentos enviados. Pode informar o CNPJ na resposta?"
+            ),
+            payload_parcial=resposta_claude,
+        )
 
     # 3. Empresa
     empresa_id, empresa_attrs = api.resolver_empresa(cnpj)
     if not empresa_id:
-        raise ValueError(f"CNPJ {cnpj} não encontrado em /empresas")
+        _raise_pendencia(
+            f"CNPJ {cnpj} não encontrado em /empresas",
+            motivo_cliente=(
+                f"O CNPJ {cnpj} não está cadastrado no nosso sistema. "
+                f"Pode confirmar se o CNPJ está correto?"
+            ),
+            payload_parcial=resposta_claude,
+        )
     razao = empresa_attrs.get("nome", "?")
     log.info(f"   🏢 Empresa {empresa_id}: {razao}")
 
@@ -409,9 +479,27 @@ def processar_admissao(
             funcao_id, conf, fmsg = funcao_id2, conf2, fmsg2
             resposta_claude = resposta_claude2
         else:
-            raise ValueError(f"Função ainda ambígua após re-prompt: {fmsg2}")
+            cargo = dados.get("cargo") or "?"
+            _raise_pendencia(
+                f"Função ainda ambígua após re-prompt: {fmsg2}",
+                motivo_cliente=(
+                    f"O cargo informado ({cargo}) tem várias variantes parecidas "
+                    f"no nosso cadastro. Pode informar o nome EXATO do cargo "
+                    f"(e o código CBO, se tiver)?"
+                ),
+                payload_parcial=resposta_claude,
+            )
     elif funcao_id is None:
-        raise ValueError(f"Função: {fmsg}")
+        cargo = dados.get("cargo") or "?"
+        _raise_pendencia(
+            f"Função: {fmsg}",
+            motivo_cliente=(
+                f"O cargo informado ({cargo}) não está cadastrado no nosso "
+                f"sistema. Pode informar um nome de cargo equivalente, ou "
+                f"o código CBO?"
+            ),
+            payload_parcial=resposta_claude,
+        )
     log.info(f"   💼 Função: {funcao_id} ({conf:.0%})")
 
     # 6. Payload final
@@ -425,7 +513,6 @@ def processar_admissao(
     faltando = validar_campos_obrigatorios(payload)
     if faltando:
         log.error(f"   ⛔ Campos obrigatórios faltando: {faltando}")
-        # Salva o payload (pra DP inspecionar/completar) e pendência
         salvar_payload(
             msg_id, metadados, payload,
             resolucao={
@@ -439,26 +526,12 @@ def processar_admissao(
                 "campos_faltando": faltando,
             },
         )
-        # Responde no thread original — cliente fornece o que falta no
-        # próprio email; DP fica em CC pra acompanhar.
-        try:
-            corpo_cliente = email_resposta_cliente(payload, faltando)
-            gmail.responder_no_thread(
-                msg_pra_resposta,
-                corpo=corpo_cliente,
-                cc=config.email_dp or None,
-            )
-            log.info(f"   📨 Resposta enviada no thread pedindo: {faltando}")
-        except Exception as e:
-            log.exception(f"   Falha enviando resposta no thread: {e}")
-
-        # Marca o exception com a lista pra o outer handler propagar no log
-        err = ValueError(f"Campos obrigatórios faltando: {', '.join(faltando)}")
-        err.campos_faltando = faltando  # type: ignore[attr-defined]
-        # Sinaliza que o email pro DP já foi enviado (no thread) — outer handler
-        # não precisa mandar email seco duplicado
-        err.cliente_ja_notificado = True  # type: ignore[attr-defined]
-        raise err
+        _raise_pendencia(
+            f"Campos obrigatórios faltando: {', '.join(faltando)}",
+            motivo_cliente="",  # ignorado quando campos_faltando está populado
+            campos_faltando=faltando,
+            payload_parcial=payload,
+        )
 
     # Snapshot resolução pra auditoria (vai pro arquivo do payload)
     resolucao = {
@@ -549,8 +622,10 @@ def rodar_uma_passada(config: Config, claude: ClaudeClient, planilha: list[dict]
 
         for msg in emails:
             _processar_seguro(
-                lambda: processar_email(msg, gmail, claude, api, planilha, config),
-                msg_id=msg["id"], msg_pra_label=msg["id"],
+                lambda m=msg: processar_email(m, gmail, claude, api, planilha, config),
+                msg_id=msg["id"],
+                msg_pra_label=msg["id"],
+                msg_pra_resposta=msg,
                 gmail=gmail, config=config,
             )
 
@@ -562,13 +637,14 @@ def rodar_uma_passada(config: Config, claude: ClaudeClient, planilha: list[dict]
             tid = thread.get("id", "?")
             msgs = thread.get("messages", []) or []
             ref_id = msgs[0]["id"] if msgs else tid
+            ultima_msg = msgs[-1] if msgs else None
             _processar_seguro(
                 lambda t=thread: processar_thread_resposta(
                     t, gmail, claude, api, planilha, config
                 ),
                 msg_id=ref_id,
-                # Última msg do thread (do cliente) recebe a label de pendente
                 msg_pra_label=msgs[-1]["id"] if msgs else ref_id,
+                msg_pra_resposta=ultima_msg,
                 gmail=gmail, config=config,
             )
     finally:
@@ -579,32 +655,63 @@ def _processar_seguro(
     fn,
     msg_id: str,
     msg_pra_label: str,
+    msg_pra_resposta: dict | None,
     gmail: GmailClient,
     config: Config,
 ) -> None:
-    """Executa fn() capturando exceptions e aplicando label pendente.
-
-    Se `cliente_ja_notificado` foi setado pela exception, NÃO manda email
-    seco pro DP (a resposta no thread já avisou o DP via CC).
+    """Executa fn() capturando exceptions:
+      - aplica label pendente
+      - envia reply amigável NO THREAD original (CC pro DP) — único canal de
+        comunicação em casos de pendência, evitando email seco duplicado
+      - loga em admissao_log.ndjson
     """
     try:
         fn()
     except Exception as e:
         log.exception(f"❌ {msg_id}: {e}")
-        cliente_ja_notificado = getattr(e, "cliente_ja_notificado", False)
+
+        motivo_cliente = getattr(e, "motivo_cliente", None)
+        campos_faltando = getattr(e, "campos_faltando", None) or []
+        payload_parcial = getattr(e, "payload_parcial", None)
+        e_e_pendencia = bool(motivo_cliente or campos_faltando)
+
+        # 1. Label pendente
         try:
             gmail.aplicar_label(msg_pra_label, config.label_pendente)
-            if config.email_dp and not cliente_ja_notificado:
+        except Exception:
+            log.exception("Falha aplicando label pendente")
+
+        # 2. Resposta no thread (preferido) OU email seco pro DP (fallback)
+        reply_enviado = False
+        if msg_pra_resposta and e_e_pendencia:
+            try:
+                corpo = email_resposta_cliente(
+                    payload_parcial, campos_faltando, motivo_livre=motivo_cliente
+                )
+                gmail.responder_no_thread(
+                    msg_pra_resposta, corpo=corpo, cc=config.email_dp or None
+                )
+                reply_enviado = True
+                log.info(
+                    f"   📨 Reply enviado no thread "
+                    f"(cliente + DP em CC)"
+                )
+            except Exception:
+                log.exception("Falha enviando reply no thread")
+
+        if not reply_enviado and config.email_dp:
+            try:
                 assunto, corpo = email_pendencia(str(e), {})
                 gmail.enviar_email(config.email_dp, assunto, corpo)
-        except Exception:
-            log.exception("Falha também ao notificar pendência")
-        bloqueados = getattr(e, "campos_faltando", []) or []
+            except Exception:
+                log.exception("Falha enviando email seco pro DP")
+
+        # 3. Log NDJSON
         log_jsonl({
             "msg_id": msg_id,
-            "status": "pendente_validacao" if bloqueados else "erro",
+            "status": "pendente_validacao" if campos_faltando else "erro",
             "erro": str(e),
-            "_validacao_bloqueada": bloqueados,
+            "_validacao_bloqueada": campos_faltando,
         })
 
 

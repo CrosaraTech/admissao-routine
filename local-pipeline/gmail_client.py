@@ -263,31 +263,40 @@ class GmailClient:
             userId="me", id=thread_id, format="full"
         ).execute()
 
-    def buscar_threads_aguardando_cliente(self, label_pendente: str) -> list[dict]:
-        """Threads marcados ADMISSÃO/pendente cuja ÚLTIMA mensagem é do cliente.
+    def _from_de(self, msg: dict) -> str:
+        for h in msg.get("payload", {}).get("headers", []):
+            if h["name"].lower() == "from":
+                return (h["value"] or "").lower()
+        return ""
 
-        Ou seja: o bot pediu informação faltante; cliente respondeu.
+    def _eh_do_bot(self, msg: dict) -> bool:
+        bot = self.meu_email()
+        return bool(bot) and bot in self._from_de(msg)
+
+    def buscar_threads_aguardando_cliente(self, label_pendente: str) -> list[dict]:
+        """Threads marcados ADMISSÃO/pendente cuja ÚLTIMA mensagem é do cliente
+        E que JÁ tiveram pelo menos uma resposta do bot.
+
+        Sem a 2ª condição, threads pendentes onde o bot nunca respondeu (ex:
+        falha técnica enviando o reply) seriam reprocessados em loop infinito
+        a cada passada — pq a 'última msg do cliente' continua sendo o email
+        original que falhou.
         """
         if not self._label_id(label_pendente):
             return []
         res = self.service.users().threads().list(
             userId="me", q=f'label:"{label_pendente}"', maxResults=50,
         ).execute()
-        bot = self.meu_email()
         threads: list[dict] = []
         for ts in res.get("threads", []):
             thread = self.obter_thread(ts["id"])
             msgs = thread.get("messages", [])
             if not msgs:
                 continue
-            last = msgs[-1]
-            from_addr = ""
-            for h in last.get("payload", {}).get("headers", []):
-                if h["name"].lower() == "from":
-                    from_addr = h["value"].lower()
-                    break
-            if bot and bot in from_addr:
-                continue  # última msg é do bot; cliente ainda não respondeu
+            if not any(self._eh_do_bot(m) for m in msgs):
+                continue  # bot nunca respondeu → estado inicial quebrado, DP vê
+            if self._eh_do_bot(msgs[-1]):
+                continue  # última é do bot → esperando cliente responder
             threads.append(thread)
         return threads
 
