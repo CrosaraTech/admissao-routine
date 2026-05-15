@@ -1,0 +1,20 @@
+{
+  "ecotador": {
+    "base_url": "https://dp.pack.alterdata.com.br/api/v1",
+    "token": ""
+  },
+  "gmail": {
+    "label_entrada": "ADMISSÃO",
+    "label_processado": "ADMISSÃO/processado",
+    "label_pendente": "ADMISSÃO/pendente"
+  },
+  "dp": {
+    "email_notificacao": "pessoal@contabilidadehavai.com.br"
+  },
+  "anthropic": {
+    "model": "claude-sonnet-4-20250514",
+    "max_tokens": 8192
+  },
+  "polling_intervalo_segundos": 300,
+  "dry_run": false
+}

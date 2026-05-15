@@ -1,6 +1,7 @@
 # Credenciais — NUNCA commitar
 .env
 .env.*
+!.env.example
 gmail_token.json
 *.token.json
 credentials.json
@@ -9,6 +10,7 @@ credentials.json
 # Logs (podem conter CPF, nome, IDs de candidato)
 admissao_log.json
 *_log.json
+*.ndjson
 
 # Bytecode
 __pycache__/
