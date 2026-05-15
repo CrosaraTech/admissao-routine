@@ -24,6 +24,27 @@ CHAVES_TOPO_PARA_REMOVER = {
 }
 
 
+# Campos que SEMPRE precisam ser preenchidos manualmente no Alterdata Desktop
+# (limitações de produto + bugs do sync E-plugin). Referência: briefing.md
+# seção 9 e lookups.json:campos_faltando_no_payload.
+CAMPOS_MANUAIS_DP = [
+    "Matrícula eSocial",
+    "Categoria eSocial (default: 101 Empregado)",
+    "Natureza da atividade (default: Trabalhador urbano)",
+    "Tipo de jornada",
+    "Regime de Jornada (Horário de Trabalho)",
+    "Horas semanais (default: 44)",
+    "Horário (código — varia por empresa)",
+    "Tipo de salário contratual (Mensal + data=admissão)",
+    "Adiantamento (☑ marcar)",
+    "Não atualiza salário (☑ marcar)",
+    "Dias para prorrogação (default: 60)",
+    "FGTS (Conta, Data opção=admissão, UF, Saldo)",
+    "Tipo de Identidade (bug sync — chega vazio mesmo com id=1)",
+    "Cor/Raça (bug off-by-one — confirmar no Desktop)",
+]
+
+
 # Campos obrigatórios pra subir a admissão (lista do eContador, captura tela).
 # Faltando qualquer um → pendência (DP completa manual e o e-mail vira pendente).
 #

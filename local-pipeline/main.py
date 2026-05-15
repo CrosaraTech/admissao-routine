@@ -43,6 +43,7 @@ from ecotador_client import EContadorAPI
 from funcao import carregar_planilha, resolver_funcao
 from gmail_client import GmailClient
 from payload_builder import (
+    CAMPOS_MANUAIS_DP,
     extrair_dados_consulta,
     finalizar_payload,
     validar_campos_obrigatorios,
@@ -130,7 +131,13 @@ def bootstrap_arquivos_locais() -> None:
 
 
 def log_jsonl(entry: dict) -> None:
+    """Append-only NDJSON. Sempre inclui `campos_faltantes` (manuais DP +
+    bloqueios de validação, se houver)."""
     entry["timestamp"] = datetime.now().isoformat()
+    entry.setdefault("campos_faltantes", {
+        "manuais_dp": CAMPOS_MANUAIS_DP,
+        "validacao_bloqueada": entry.pop("_validacao_bloqueada", []),
+    })
     try:
         with open(LOG_FILE, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
@@ -320,7 +327,10 @@ def processar_email(
                 "campos_faltando": faltando,
             },
         )
-        raise ValueError(f"Campos obrigatórios faltando: {', '.join(faltando)}")
+        # Marca o exception com a lista pra o outer handler propagar no log
+        err = ValueError(f"Campos obrigatórios faltando: {', '.join(faltando)}")
+        err.campos_faltando = faltando  # type: ignore[attr-defined]
+        raise err
 
     # Snapshot resolução pra auditoria (vai pro arquivo do payload)
     resolucao = {
@@ -414,7 +424,14 @@ def rodar_uma_passada(config: Config, claude: ClaudeClient, planilha: list[dict]
                         gmail.enviar_email(config.email_dp, assunto, corpo)
                 except Exception:
                     log.exception("Falha também ao notificar pendência")
-                log_jsonl({"msg_id": msg["id"], "status": "erro", "erro": str(e)})
+                # Propaga lista de campos bloqueados pela validação (se vier)
+                bloqueados = getattr(e, "campos_faltando", []) or []
+                log_jsonl({
+                    "msg_id": msg["id"],
+                    "status": "pendente_validacao" if bloqueados else "erro",
+                    "erro": str(e),
+                    "_validacao_bloqueada": bloqueados,
+                })
     finally:
         api.close()
 
