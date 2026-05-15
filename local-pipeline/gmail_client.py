@@ -68,6 +68,16 @@ class GmailClient:
 
         authed_http = google_auth_httplib2.AuthorizedHttp(creds, http=http)
         self.service = build("gmail", "v1", http=authed_http, cache_discovery=False)
+        self._meu_email: str | None = None
+
+    # ---- Identidade do bot ---------------------------------------
+
+    def meu_email(self) -> str:
+        """Endereço da conta Gmail autenticada. Cacheado."""
+        if self._meu_email is None:
+            profile = self.service.users().getProfile(userId="me").execute()
+            self._meu_email = (profile.get("emailAddress") or "").lower()
+        return self._meu_email
 
     # ---- Labels --------------------------------------------------
 
@@ -90,6 +100,14 @@ class GmailClient:
         lid = self.criar_label(label_nome)
         self.service.users().messages().modify(
             userId="me", id=msg_id, body={"addLabelIds": [lid]}
+        ).execute()
+
+    def remover_label(self, msg_id: str, label_nome: str) -> None:
+        lid = self._label_id(label_nome)
+        if not lid:
+            return
+        self.service.users().messages().modify(
+            userId="me", id=msg_id, body={"removeLabelIds": [lid]}
         ).execute()
 
     # ---- Busca ---------------------------------------------------
@@ -195,3 +213,103 @@ class GmailClient:
         mime["subject"] = assunto
         raw = base64.urlsafe_b64encode(mime.as_bytes()).decode()
         self.service.users().messages().send(userId="me", body={"raw": raw}).execute()
+
+    def responder_no_thread(
+        self,
+        msg_original: dict,
+        corpo: str,
+        destinatario: str | None = None,
+        cc: str | None = None,
+        assunto_override: str | None = None,
+    ) -> None:
+        """Envia resposta no mesmo thread do email original.
+
+        - `destinatario`: se None, usa o `From` original (cliente).
+        - `cc`: opcional (ex: email do DP).
+        - Headers `In-Reply-To` / `References` setados → conversa fica linkada.
+        - `threadId` do body do send → Gmail agrupa visualmente.
+        """
+        headers_orig = {
+            h["name"].lower(): h["value"]
+            for h in msg_original.get("payload", {}).get("headers", [])
+        }
+        msgid = headers_orig.get("message-id", "")
+        subject_orig = headers_orig.get("subject", "(sem assunto)")
+        from_orig = headers_orig.get("from", "")
+
+        to = destinatario or from_orig
+        assunto = assunto_override or (
+            subject_orig if subject_orig.lower().startswith("re:") else f"Re: {subject_orig}"
+        )
+
+        mime = MIMEText(corpo, "plain", "utf-8")
+        mime["to"] = to
+        if cc:
+            mime["cc"] = cc
+        mime["subject"] = assunto
+        if msgid:
+            mime["In-Reply-To"] = msgid
+            mime["References"] = msgid
+
+        raw = base64.urlsafe_b64encode(mime.as_bytes()).decode()
+        body = {"raw": raw, "threadId": msg_original.get("threadId")}
+        self.service.users().messages().send(userId="me", body=body).execute()
+
+    # ---- Continuação de thread (resposta do cliente) -------------
+
+    def obter_thread(self, thread_id: str) -> dict:
+        """Retorna o thread inteiro com todas as mensagens."""
+        return self.service.users().threads().get(
+            userId="me", id=thread_id, format="full"
+        ).execute()
+
+    def buscar_threads_aguardando_cliente(self, label_pendente: str) -> list[dict]:
+        """Threads marcados ADMISSÃO/pendente cuja ÚLTIMA mensagem é do cliente.
+
+        Ou seja: o bot pediu informação faltante; cliente respondeu.
+        """
+        if not self._label_id(label_pendente):
+            return []
+        res = self.service.users().threads().list(
+            userId="me", q=f'label:"{label_pendente}"', maxResults=50,
+        ).execute()
+        bot = self.meu_email()
+        threads: list[dict] = []
+        for ts in res.get("threads", []):
+            thread = self.obter_thread(ts["id"])
+            msgs = thread.get("messages", [])
+            if not msgs:
+                continue
+            last = msgs[-1]
+            from_addr = ""
+            for h in last.get("payload", {}).get("headers", []):
+                if h["name"].lower() == "from":
+                    from_addr = h["value"].lower()
+                    break
+            if bot and bot in from_addr:
+                continue  # última msg é do bot; cliente ainda não respondeu
+            threads.append(thread)
+        return threads
+
+    def extrair_corpo_thread(self, thread: dict) -> str:
+        """Concatena o corpo de TODAS as mensagens do thread, em ordem cronológica."""
+        bodies: list[str] = []
+        for msg in thread.get("messages", []):
+            body = self.extrair_corpo(msg)
+            if not body:
+                continue
+            headers = {h["name"].lower(): h["value"]
+                       for h in msg.get("payload", {}).get("headers", [])}
+            cabecalho = (
+                f"--- De: {headers.get('from', '?')} | "
+                f"Data: {headers.get('date', '?')} ---"
+            )
+            bodies.append(f"{cabecalho}\n{body}")
+        return "\n\n".join(bodies)
+
+    def baixar_anexos_thread(self, thread: dict) -> list[dict]:
+        """Concatena anexos de TODAS as mensagens do thread (em ordem)."""
+        todos: list[dict] = []
+        for msg in thread.get("messages", []):
+            todos.extend(self.baixar_anexos(msg))
+        return todos

@@ -210,6 +210,7 @@ def email_sucesso(candidato_id: str, payload: dict, empresa_nome: str) -> tuple[
 
 
 def email_pendencia(motivo: str, contexto: dict) -> tuple[str, str]:
+    """Email seco pro DP em casos de erro genérico (sem thread/cliente)."""
     assunto = f"[ADMISSÃO PENDENTE] {motivo[:80]}"
     ctx_str = json.dumps(contexto, ensure_ascii=False, indent=2)[:3000]
     corpo = (
@@ -221,6 +222,47 @@ def email_pendencia(motivo: str, contexto: dict) -> tuple[str, str]:
         f"Pipeline Local — {datetime.now().isoformat(timespec='seconds')}"
     )
     return assunto, corpo
+
+
+def email_resposta_cliente(payload: dict, faltantes: list[str]) -> str:
+    """Corpo da resposta amigável que vai pro cliente no mesmo thread.
+
+    Mostra o que já temos + lista clara do que falta. Cliente responde no
+    próprio thread com o que falta (pipeline detecta na próxima passada).
+    """
+    attrs = (payload.get("data") or {}).get("attributes") or {}
+    nome = attrs.get("nome") or "este(a) candidato(a)"
+
+    # Resumo do que já foi extraído (campos chave)
+    ja_temos: list[str] = []
+    def add(rotulo: str, valor) -> None:
+        if valor not in (None, "", 0):
+            ja_temos.append(f"  • {rotulo}: {valor}")
+
+    add("Nome", attrs.get("nome"))
+    add("CPF", attrs.get("cpf"))
+    add("Data de Admissão", attrs.get("admissao"))
+    add("Data de Nascimento", attrs.get("nascimento"))
+    add("Cargo", attrs.get("nomecargo"))
+    add("Salário", attrs.get("salario"))
+
+    bloco_pendentes = "\n".join(f"  • {f}" for f in faltantes) or "  (todos)"
+    bloco_temos = "\n".join(ja_temos) or "  (nenhum)"
+
+    corpo = (
+        f"Olá!\n\n"
+        f"Recebemos a documentação de admissão de {nome}. "
+        f"Para concluirmos o cadastro no nosso sistema, ainda precisamos "
+        f"dos seguintes dados que não conseguimos identificar:\n\n"
+        f"⚠ Pendentes:\n{bloco_pendentes}\n\n"
+        f"✅ O que já recebemos:\n{bloco_temos}\n\n"
+        f"Por favor, responda este mesmo e-mail informando apenas o que "
+        f"está faltando — não precisa reenviar os documentos.\n\n"
+        f"Qualquer dúvida, é só responder.\n\n"
+        f"Atenciosamente,\n"
+        f"DP — Crosara Contabilidade"
+    )
+    return corpo
 
 
 # ============================================================
@@ -235,13 +277,83 @@ def processar_email(
     planilha_cbo: list[dict],
     config: Config,
 ) -> None:
-    msg_id = msg["id"]
-    metadados = gmail.extrair_metadados(msg)
-    log.info(f"📧 {msg_id} | {metadados.get('assunto', '')[:60]}")
-
-    # 1. Corpo + anexos
+    """Wrapper compatível: coleta dados do msg solo e delega pra processar_admissao."""
     corpo = gmail.extrair_corpo(msg)
     anexos = gmail.baixar_anexos(msg)
+    metadados = gmail.extrair_metadados(msg)
+    processar_admissao(
+        msg_id=msg["id"],
+        msg_pra_resposta=msg,
+        corpo=corpo,
+        anexos=anexos,
+        metadados=metadados,
+        gmail=gmail, claude=claude, api=api,
+        planilha_cbo=planilha_cbo, config=config,
+        ids_label_pendente_remover=[],
+    )
+
+
+def processar_thread_resposta(
+    thread: dict,
+    gmail: GmailClient,
+    claude: ClaudeClient,
+    api: EContadorAPI,
+    planilha_cbo: list[dict],
+    config: Config,
+) -> None:
+    """Cliente respondeu num thread pendente — reprocessa com TUDO do thread."""
+    msgs = thread.get("messages", [])
+    if not msgs:
+        raise ValueError("Thread vazio")
+
+    # Identidade do log: usa msg original (mantém audit trail consistente)
+    msg_original = msgs[0]
+    msg_id = msg_original["id"]
+
+    # Coleta agregada (corpo de todas + anexos de todas)
+    corpo = gmail.extrair_corpo_thread(thread)
+    anexos = gmail.baixar_anexos_thread(thread)
+    metadados = gmail.extrair_metadados(msg_original)
+
+    log.info(
+        f"🔁 Reprocessando thread {thread.get('id', '?')[:16]} "
+        f"({len(msgs)} mensagens) → msg_id_ref={msg_id}"
+    )
+
+    # Lista de msg ids com label pendente — vamos remover após reprocessar
+    label_pendente_ids: list[str] = []
+    pendente_id = gmail._label_id(config.label_pendente)
+    if pendente_id:
+        for m in msgs:
+            if pendente_id in (m.get("labelIds") or []):
+                label_pendente_ids.append(m["id"])
+
+    processar_admissao(
+        msg_id=msg_id,
+        msg_pra_resposta=msgs[-1],  # responde na última msg (do cliente)
+        corpo=corpo,
+        anexos=anexos,
+        metadados=metadados,
+        gmail=gmail, claude=claude, api=api,
+        planilha_cbo=planilha_cbo, config=config,
+        ids_label_pendente_remover=label_pendente_ids,
+    )
+
+
+def processar_admissao(
+    msg_id: str,
+    msg_pra_resposta: dict,
+    corpo: str,
+    anexos: list[dict],
+    metadados: dict,
+    gmail: GmailClient,
+    claude: ClaudeClient,
+    api: EContadorAPI,
+    planilha_cbo: list[dict],
+    config: Config,
+    ids_label_pendente_remover: list[str],
+) -> None:
+    log.info(f"📧 {msg_id} | {metadados.get('assunto', '')[:60]}")
     log.info(f"   Corpo: {len(corpo)} chars | Anexos: {len(anexos)}")
 
     if not corpo and not anexos:
@@ -327,9 +439,25 @@ def processar_email(
                 "campos_faltando": faltando,
             },
         )
+        # Responde no thread original — cliente fornece o que falta no
+        # próprio email; DP fica em CC pra acompanhar.
+        try:
+            corpo_cliente = email_resposta_cliente(payload, faltando)
+            gmail.responder_no_thread(
+                msg_pra_resposta,
+                corpo=corpo_cliente,
+                cc=config.email_dp or None,
+            )
+            log.info(f"   📨 Resposta enviada no thread pedindo: {faltando}")
+        except Exception as e:
+            log.exception(f"   Falha enviando resposta no thread: {e}")
+
         # Marca o exception com a lista pra o outer handler propagar no log
         err = ValueError(f"Campos obrigatórios faltando: {', '.join(faltando)}")
         err.campos_faltando = faltando  # type: ignore[attr-defined]
+        # Sinaliza que o email pro DP já foi enviado (no thread) — outer handler
+        # não precisa mandar email seco duplicado
+        err.cliente_ja_notificado = True  # type: ignore[attr-defined]
         raise err
 
     # Snapshot resolução pra auditoria (vai pro arquivo do payload)
@@ -364,6 +492,12 @@ def processar_email(
     if ok:
         candidato_id = ref
         log.info(f"   ✅ Candidato {candidato_id} criado")
+        # Limpa label pendente de mensagens antigas (caso veio de reprocessamento)
+        for mid in ids_label_pendente_remover:
+            try:
+                gmail.remover_label(mid, config.label_pendente)
+            except Exception as e:
+                log.warning(f"   Falha removendo pendente de {mid}: {e}")
         gmail.aplicar_label(msg_id, config.label_processado)
         if config.email_dp:
             assunto, corpo_email = email_sucesso(candidato_id, payload, razao)
@@ -407,33 +541,71 @@ def rodar_uma_passada(config: Config, claude: ClaudeClient, planilha: list[dict]
     gmail = GmailClient()
     api = EContadorAPI(config.base_url, config.token)
     try:
+        # ---- 1. Emails NOVOS (sem label de processado/pendente) ------
         emails = gmail.buscar_emails_pendentes(
             config.label_entrada, config.label_processado, config.label_pendente
         )
-        log.info(f"📥 {len(emails)} email(s) pendente(s)")
+        log.info(f"📥 {len(emails)} email(s) novo(s)")
 
         for msg in emails:
-            try:
-                processar_email(msg, gmail, claude, api, planilha, config)
-            except Exception as e:
-                log.exception(f"❌ {msg['id']}: {e}")
-                try:
-                    gmail.aplicar_label(msg["id"], config.label_pendente)
-                    if config.email_dp:
-                        assunto, corpo = email_pendencia(str(e), {})
-                        gmail.enviar_email(config.email_dp, assunto, corpo)
-                except Exception:
-                    log.exception("Falha também ao notificar pendência")
-                # Propaga lista de campos bloqueados pela validação (se vier)
-                bloqueados = getattr(e, "campos_faltando", []) or []
-                log_jsonl({
-                    "msg_id": msg["id"],
-                    "status": "pendente_validacao" if bloqueados else "erro",
-                    "erro": str(e),
-                    "_validacao_bloqueada": bloqueados,
-                })
+            _processar_seguro(
+                lambda: processar_email(msg, gmail, claude, api, planilha, config),
+                msg_id=msg["id"], msg_pra_label=msg["id"],
+                gmail=gmail, config=config,
+            )
+
+        # ---- 2. Threads PENDENTES com resposta do cliente ------------
+        threads = gmail.buscar_threads_aguardando_cliente(config.label_pendente)
+        if threads:
+            log.info(f"🔁 {len(threads)} thread(s) com resposta do cliente")
+        for thread in threads:
+            tid = thread.get("id", "?")
+            msgs = thread.get("messages", []) or []
+            ref_id = msgs[0]["id"] if msgs else tid
+            _processar_seguro(
+                lambda t=thread: processar_thread_resposta(
+                    t, gmail, claude, api, planilha, config
+                ),
+                msg_id=ref_id,
+                # Última msg do thread (do cliente) recebe a label de pendente
+                msg_pra_label=msgs[-1]["id"] if msgs else ref_id,
+                gmail=gmail, config=config,
+            )
     finally:
         api.close()
+
+
+def _processar_seguro(
+    fn,
+    msg_id: str,
+    msg_pra_label: str,
+    gmail: GmailClient,
+    config: Config,
+) -> None:
+    """Executa fn() capturando exceptions e aplicando label pendente.
+
+    Se `cliente_ja_notificado` foi setado pela exception, NÃO manda email
+    seco pro DP (a resposta no thread já avisou o DP via CC).
+    """
+    try:
+        fn()
+    except Exception as e:
+        log.exception(f"❌ {msg_id}: {e}")
+        cliente_ja_notificado = getattr(e, "cliente_ja_notificado", False)
+        try:
+            gmail.aplicar_label(msg_pra_label, config.label_pendente)
+            if config.email_dp and not cliente_ja_notificado:
+                assunto, corpo = email_pendencia(str(e), {})
+                gmail.enviar_email(config.email_dp, assunto, corpo)
+        except Exception:
+            log.exception("Falha também ao notificar pendência")
+        bloqueados = getattr(e, "campos_faltando", []) or []
+        log_jsonl({
+            "msg_id": msg_id,
+            "status": "pendente_validacao" if bloqueados else "erro",
+            "erro": str(e),
+            "_validacao_bloqueada": bloqueados,
+        })
 
 
 def main() -> int:
