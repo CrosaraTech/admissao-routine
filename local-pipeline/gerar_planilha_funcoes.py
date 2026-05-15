@@ -4,10 +4,14 @@ Uso:
     python gerar_planilha_funcoes.py [--out funcoes_cbo.xlsx]
 
 Lê ECONTADOR_TOKEN do .env e pagina /funcoes (cap=200/página, ~9k itens).
-Gera planilha com colunas: funcao_id, nome_cargo, cbo, codigo, externoid.
+Gera planilha com colunas: usar, funcao_id, nome_cargo, cbo, codigo, externoid.
 
-Reaproveitável: rode periodicamente pra manter a planilha sincronizada
-com cadastros novos no eContador.
+Coluna `usar`: marque com "X" os cargos que o escritório usa de verdade.
+Quando o pipeline resolver uma função, ele:
+  1. Faz match semântico por nome em TODA a planilha
+  2. Entre os candidatos similares, prefere os que estão marcados com X
+
+Re-rodar este script PRESERVA as marcas X existentes (indexadas por funcao_id).
 """
 
 from __future__ import annotations
@@ -21,8 +25,9 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 import httpx
-from openpyxl import Workbook
-from openpyxl.styles import Font, PatternFill
+from openpyxl import Workbook, load_workbook
+from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.utils import get_column_letter
 
 
 load_dotenv()
@@ -93,27 +98,68 @@ def fetch_todas_funcoes(token: str) -> list[dict]:
     return funcoes
 
 
-def gravar_xlsx(funcoes: list[dict], path: Path) -> None:
+def ler_x_existentes(path: Path) -> set[str]:
+    """Lê marcas 'X' (coluna `usar`) de uma planilha existente, indexadas por funcao_id."""
+    if not path.exists():
+        return set()
+    try:
+        wb = load_workbook(path, read_only=True, data_only=True)
+        ws = wb.active
+        rows = ws.iter_rows(values_only=True)
+        header = [str(c or "").strip().lower() for c in next(rows, [])]
+        if "usar" not in header or "funcao_id" not in header:
+            log.warning(f"Planilha existente em {path} sem colunas usar/funcao_id — não preservando marcas")
+            return set()
+        i_usar = header.index("usar")
+        i_id = header.index("funcao_id")
+        marcados: set[str] = set()
+        for row in rows:
+            usar_val = str(row[i_usar] or "").strip().upper()
+            fid = str(row[i_id] or "").strip()
+            if usar_val == "X" and fid:
+                marcados.add(fid)
+        log.info(f"📌 {len(marcados)} marcas X preservadas da planilha anterior")
+        return marcados
+    except Exception as e:
+        log.warning(f"Falha lendo marcas X de {path}: {e}")
+        return set()
+
+
+def gravar_xlsx(funcoes: list[dict], path: Path, x_marcados: set[str]) -> None:
     wb = Workbook()
     ws = wb.active
     ws.title = "funcoes"
 
-    headers = ["funcao_id", "nome_cargo", "cbo", "codigo", "externoid"]
+    # Ordem das colunas: 'usar' primeiro pra fácil edição manual
+    headers = ["usar", "funcao_id", "nome_cargo", "cbo", "codigo", "externoid"]
     ws.append(headers)
 
     # Estilo do cabeçalho
     header_font = Font(bold=True, color="FFFFFF")
     header_fill = PatternFill(start_color="305496", end_color="305496", fill_type="solid")
+    center = Alignment(horizontal="center")
     for col in range(1, len(headers) + 1):
         cell = ws.cell(row=1, column=col)
         cell.font = header_font
         cell.fill = header_fill
+        cell.alignment = center
+
+    # Estilo das células 'usar' (centralizadas + fundo amarelo claro se marcadas)
+    usar_fill = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
 
     for f in funcoes:
-        ws.append([f.get(h, "") for h in headers])
+        fid = f.get("funcao_id", "")
+        usar = "X" if fid in x_marcados else ""
+        ws.append([usar, fid, f.get("nome_cargo", ""), f.get("cbo", ""),
+                   f.get("codigo", ""), f.get("externoid", "")])
+        # Estiliza a célula 'usar' da linha recém-inserida
+        cell = ws.cell(row=ws.max_row, column=1)
+        cell.alignment = center
+        if usar:
+            cell.fill = usar_fill
 
-    # Ajuste de largura das colunas
-    larguras = {"A": 12, "B": 60, "C": 10, "D": 12, "E": 38}
+    # Ajuste de largura das colunas (A=usar, B=id, C=nome, D=cbo, E=codigo, F=externoid)
+    larguras = {"A": 6, "B": 12, "C": 60, "D": 10, "E": 12, "F": 38}
     for col, w in larguras.items():
         ws.column_dimensions[col].width = w
 
@@ -137,12 +183,14 @@ def main() -> int:
         log.error("ECONTADOR_TOKEN não encontrado no ambiente (.env)")
         return 1
 
+    out_path = Path(args.out)
+    x_marcados = ler_x_existentes(out_path)
+
     log.info("Puxando todas as funções do eContador...")
     funcoes = fetch_todas_funcoes(token)
     log.info(f"✅ {len(funcoes)} funções coletadas")
 
-    out_path = Path(args.out)
-    gravar_xlsx(funcoes, out_path)
+    gravar_xlsx(funcoes, out_path, x_marcados)
     log.info(f"📊 Planilha salva em {out_path} ({out_path.stat().st_size:,} bytes)")
     return 0
 
