@@ -24,6 +24,115 @@ CHAVES_TOPO_PARA_REMOVER = {
 }
 
 
+# Campos obrigatórios pra subir a admissão (lista do eContador, captura tela).
+# Faltando qualquer um → pendência (DP completa manual e o e-mail vira pendente).
+#
+# `numero` é NÃO obrigatório por design — briefing diz que 0 significa "sem número"
+# e a API exige Integer (não aceita "SN" string).
+ATTRS_OBRIGATORIOS = [
+    "nome",
+    "cpf",
+    "admissao",
+    "nascimento",
+    "nomedamae",
+    "municipionascimento",
+    "cep",
+    "rua",
+    "bairro",
+    "cidade",
+    "diascontratoexperiencia",
+    "primeiroemprego",
+    "salario",
+]
+
+RELS_OBRIGATORIOS = [
+    "empresa",
+    "departamento",
+    "funcao",
+    "estadocivil",
+    "sexo",
+    "raca",  # Cor
+    "escolaridade",
+    "naturalidade",
+    "paisnascimento",
+    "estado",  # estado do endereço
+    "tipoadmissao",
+    "categoriawdp",  # Categoria
+    "formapagamento",
+]
+
+LABELS_AMIGAVEIS = {
+    "nome": "Nome",
+    "cpf": "CPF",
+    "admissao": "Data de Admissão",
+    "nascimento": "Data de nascimento",
+    "nomedamae": "Nome da Mãe",
+    "municipionascimento": "Município de nascimento",
+    "cep": "CEP",
+    "rua": "Rua",
+    "bairro": "Bairro",
+    "cidade": "Cidade",
+    "diascontratoexperiencia": "Quantidade de dias do contrato de experiência",
+    "primeiroemprego": "Primeiro Emprego",
+    "salario": "Salário Base",
+    "empresa": "Empresa",
+    "departamento": "Departamento",
+    "funcao": "Função",
+    "estadocivil": "Estado Civil",
+    "sexo": "Sexo",
+    "raca": "Cor",
+    "escolaridade": "Escolaridade",
+    "naturalidade": "Naturalidade",
+    "paisnascimento": "País de Nascimento",
+    "estado": "Estado (endereço)",
+    "tipoadmissao": "Tipo de Admissão",
+    "categoriawdp": "Categoria",
+    "formapagamento": "Forma de Pagamento",
+}
+
+
+def validar_campos_obrigatorios(payload: dict) -> list[str]:
+    """Verifica os campos exigidos pelo eContador. Retorna labels faltantes.
+
+    Lista vazia → pode postar. Lista não-vazia → pendência.
+
+    Regras especiais:
+      - `primeiroemprego` é bool: só precisa existir (True ou False valem)
+      - `salario` precisa ser > 0
+      - `diascontratoexperiencia` precisa ser > 0
+      - relationships: precisa ter `.data.id` não-vazio
+    """
+    faltando: list[str] = []
+    data = payload.get("data") or {}
+    attrs = data.get("attributes") or {}
+    rels = data.get("relationships") or {}
+
+    for k in ATTRS_OBRIGATORIOS:
+        v = attrs.get(k)
+        if k == "primeiroemprego":
+            if v is None:
+                faltando.append(LABELS_AMIGAVEIS.get(k, k))
+            continue
+        if k in ("salario", "diascontratoexperiencia"):
+            try:
+                if v is None or float(v) <= 0:
+                    faltando.append(LABELS_AMIGAVEIS.get(k, k))
+            except (TypeError, ValueError):
+                faltando.append(LABELS_AMIGAVEIS.get(k, k))
+            continue
+        if v in (None, "", [], {}):
+            faltando.append(LABELS_AMIGAVEIS.get(k, k))
+
+    for k in RELS_OBRIGATORIOS:
+        rel = rels.get(k) or {}
+        rel_data = rel.get("data") or {}
+        rid = rel_data.get("id")
+        if not rid or str(rid).strip() in ("", "0", "None"):
+            faltando.append(LABELS_AMIGAVEIS.get(k, k))
+
+    return faltando
+
+
 def _so_digitos(s: Any) -> str:
     return re.sub(r"\D", "", str(s or ""))
 

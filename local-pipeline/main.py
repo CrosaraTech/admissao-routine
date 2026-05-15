@@ -42,7 +42,11 @@ from departamento import resolver_departamento
 from ecotador_client import EContadorAPI
 from funcao import carregar_planilha, resolver_funcao
 from gmail_client import GmailClient
-from payload_builder import extrair_dados_consulta, finalizar_payload
+from payload_builder import (
+    extrair_dados_consulta,
+    finalizar_payload,
+    validar_campos_obrigatorios,
+)
 
 
 # ============================================================
@@ -297,6 +301,26 @@ def processar_email(
         f"   📦 Payload: {len(payload['data']['attributes'])} attrs + "
         f"{len(payload['data']['relationships'])} rels"
     )
+
+    # 6.5 Validação determinística — campos obrigatórios pelo eContador
+    faltando = validar_campos_obrigatorios(payload)
+    if faltando:
+        log.error(f"   ⛔ Campos obrigatórios faltando: {faltando}")
+        # Salva o payload (pra DP inspecionar/completar) e pendência
+        salvar_payload(
+            msg_id, metadados, payload,
+            resolucao={
+                "cnpj_empresa": cnpj, "empresa_id": empresa_id,
+                "razao_social": razao, "departamento_id": depto_id,
+                "funcao_id": funcao_id,
+            },
+            resultado={
+                "status": "pendente_validacao", "candidato_id": None,
+                "erro": "Campos obrigatórios faltando",
+                "campos_faltando": faltando,
+            },
+        )
+        raise ValueError(f"Campos obrigatórios faltando: {', '.join(faltando)}")
 
     # Snapshot resolução pra auditoria (vai pro arquivo do payload)
     resolucao = {
