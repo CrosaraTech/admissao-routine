@@ -180,18 +180,38 @@ class GmailClient:
         }
 
     def baixar_anexos(self, msg: dict) -> list[dict]:
-        """Retorna [{filename, mime, data: bytes}] pra anexos PDF/PNG/JPG."""
+        """Retorna [{filename, mime, data: bytes}] pra anexos PDF/PNG/JPG.
+
+        Inclui imagens INLINE (que Gmail manda sem `filename` quando a imagem
+        foi arrastada/colada no corpo do email — Content-Disposition: inline,
+        embutida via cid: em HTML). Pra elas geramos nome sintético.
+        """
         anexos: list[dict] = []
         msg_id = msg["id"]
+        contador_inline = 0
+        partes_ignoradas: list[str] = []
+
         for part in self._walk_parts(msg["payload"]):
-            filename = part.get("filename", "")
             mime = part.get("mimeType", "")
-            if not filename:
-                continue
+            filename = part.get("filename") or ""
+
+            # Filtra por mime (image/* ou pdf) — NÃO por filename
             if not (mime.startswith("image/") or mime == "application/pdf"):
+                # Loga se parece anexo mas tem mime fora de escopo
+                if filename or part.get("body", {}).get("attachmentId"):
+                    partes_ignoradas.append(f"{filename or '(sem nome)'} [{mime}]")
                 continue
+
             body = part.get("body", {})
             attach_id = body.get("attachmentId")
+
+            if not filename:
+                # Imagem inline / parte sem nome → sintetiza
+                contador_inline += 1
+                ext = mime.split("/")[-1] if "/" in mime else "bin"
+                ext = ext.replace("jpeg", "jpg")
+                filename = f"inline_{contador_inline}.{ext}"
+
             if attach_id:
                 att = (
                     self.service.users().messages().attachments()
@@ -203,6 +223,10 @@ class GmailClient:
             else:
                 continue
             anexos.append({"filename": filename, "mime": mime, "data": data})
+
+        if partes_ignoradas:
+            log.info(f"   Partes ignoradas (mime não-image/pdf): {partes_ignoradas}")
+
         return anexos
 
     # ---- Envio ---------------------------------------------------
