@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import re
+import time
 from pathlib import Path
 
 import anthropic
@@ -82,6 +83,11 @@ def carregar_briefing() -> str:
 
 
 class ClaudeClient:
+    # Intervalo mínimo entre chamadas consecutivas ao Claude (segundos).
+    # Throttle simples pra evitar rate-limit em pipelines com vários emails
+    # processados em sequência (cada email pode disparar 1-2 calls).
+    INTERVALO_MIN_ENTRE_CHAMADAS = 3.0
+
     def __init__(self, model: str = "claude-sonnet-4-20250514", max_tokens: int = 8192):
         api_key = os.getenv("ANTHROPIC_API_KEY")
         if not api_key:
@@ -90,6 +96,7 @@ class ClaudeClient:
         self.model = model
         self.max_tokens = max_tokens
         self.system_prompt = carregar_briefing()
+        self._ts_ultima_chamada: float = 0.0
 
     def _bloco_anexo(self, anexo: dict) -> dict | None:
         """Retorna o content-block apropriado pro Claude (image_/document_)."""
@@ -171,6 +178,13 @@ class ClaudeClient:
             if bloco:
                 content.append(bloco)
 
+        # Throttle: garante intervalo mínimo entre chamadas consecutivas
+        delta = time.time() - self._ts_ultima_chamada
+        if 0 < delta < self.INTERVALO_MIN_ENTRE_CHAMADAS:
+            espera = self.INTERVALO_MIN_ENTRE_CHAMADAS - delta
+            log.info(f"⏳ Aguardando {espera:.1f}s antes da próxima chamada ao Claude")
+            time.sleep(espera)
+
         log.info(f"Enviando {len(content)} blocos pro Claude ({self.model})")
 
         msg = self.client.messages.create(
@@ -179,6 +193,7 @@ class ClaudeClient:
             system=self.system_prompt,
             messages=[{"role": "user", "content": content}],
         )
+        self._ts_ultima_chamada = time.time()
 
         # Concatena texto de resposta
         resposta = "\n".join(

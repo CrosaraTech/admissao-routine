@@ -15,6 +15,18 @@ import re
 from email.mime.text import MIMEText
 from typing import Iterable
 
+
+# Regex pra extrair endereço de email puro de "Nome <email@host>" ou direto
+_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
+
+
+def _extrair_email(s: str | None) -> str | None:
+    """Extrai endereço puro de uma string `From`/`To`. None se inválido."""
+    if not s:
+        return None
+    m = _EMAIL_RE.search(s)
+    return m.group(0) if m else None
+
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
@@ -115,28 +127,51 @@ class GmailClient:
     def buscar_emails_pendentes(
         self, label_entrada: str, processado: str, pendente: str
     ) -> list[dict]:
-        """Lista emails que têm label_entrada e NÃO têm processado/pendente."""
+        """Retorna a PRIMEIRA mensagem de cada thread elegível.
+
+        Pipeline processa apenas a mensagem raiz (admissão original do cliente),
+        nunca respostas subsequentes. Respostas do cliente em threads
+        pendentes são tratadas pelo fluxo `buscar_threads_aguardando_cliente`.
+
+        Lógica:
+          1. Busca threads com label_entrada SEM processado/pendente
+          2. Para cada thread, pega messages[0]
+          3. Se messages[0] já tem label processado/pendente, pula a thread
+          4. Retorna lista de messages[0] dos threads não-pulados
+        """
         if not self._label_id(label_entrada):
             log.error(f"Label '{label_entrada}' não existe no Gmail")
             return []
 
-        q_parts = [f'label:"{label_entrada}"']
+        q_parts = [f'in:"{label_entrada}"']
         if self._label_id(processado):
-            q_parts.append(f'-label:"{processado}"')
+            q_parts.append(f'-in:"{processado}"')
         if self._label_id(pendente):
-            q_parts.append(f'-label:"{pendente}"')
+            q_parts.append(f'-in:"{pendente}"')
         q = " ".join(q_parts)
 
-        res = self.service.users().messages().list(
+        res = self.service.users().threads().list(
             userId="me", q=q, maxResults=50
         ).execute()
-        ids = res.get("messages", [])
-        msgs = []
-        for m in ids:
-            msgs.append(
-                self.service.users().messages().get(userId="me", id=m["id"]).execute()
-            )
-        return msgs
+        thread_summaries = res.get("threads", [])
+
+        proc_id = self._label_id(processado)
+        pend_id = self._label_id(pendente)
+
+        primeiras: list[dict] = []
+        for ts in thread_summaries:
+            thread = self.obter_thread(ts["id"])
+            msgs = thread.get("messages", []) or []
+            if not msgs:
+                continue
+            primeira = msgs[0]
+            labels = set(primeira.get("labelIds", []) or [])
+            if proc_id and proc_id in labels:
+                continue
+            if pend_id and pend_id in labels:
+                continue
+            primeiras.append(primeira)
+        return primeiras
 
     # ---- Extração de corpo + anexos -----------------------------
 
@@ -252,6 +287,10 @@ class GmailClient:
         - `cc`: opcional (ex: email do DP).
         - Headers `In-Reply-To` / `References` setados → conversa fica linkada.
         - `threadId` do body do send → Gmail agrupa visualmente.
+
+        Valida o endereço do destinatário (e do CC se fornecido). Se inválido
+        (ex: `From` original sem email parseável, mailer-daemon, etc.), loga
+        e ignora silenciosamente em vez de tentar enviar e falhar com 400.
         """
         headers_orig = {
             h["name"].lower(): h["value"]
@@ -261,15 +300,31 @@ class GmailClient:
         subject_orig = headers_orig.get("subject", "(sem assunto)")
         from_orig = headers_orig.get("from", "")
 
-        to = destinatario or from_orig
+        to_raw = destinatario or from_orig
+        to = _extrair_email(to_raw)
+        if not to:
+            log.warning(
+                f"Destinatário inválido para resposta no thread "
+                f"({to_raw!r}) — ignorando silenciosamente"
+            )
+            return
+
+        cc_clean: str | None = None
+        if cc:
+            cc_email = _extrair_email(cc)
+            if cc_email:
+                cc_clean = cc_email
+            else:
+                log.warning(f"CC inválido ({cc!r}) — enviando sem CC")
+
         assunto = assunto_override or (
             subject_orig if subject_orig.lower().startswith("re:") else f"Re: {subject_orig}"
         )
 
         mime = MIMEText(corpo, "plain", "utf-8")
         mime["to"] = to
-        if cc:
-            mime["cc"] = cc
+        if cc_clean:
+            mime["cc"] = cc_clean
         mime["subject"] = assunto
         if msgid:
             mime["In-Reply-To"] = msgid
