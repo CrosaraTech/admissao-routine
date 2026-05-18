@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import re
+import unicodedata
 from email.mime.text import MIMEText
 from typing import Iterable
 
@@ -93,9 +94,51 @@ class GmailClient:
 
     # ---- Labels --------------------------------------------------
 
+    @staticmethod
+    def _normalizar_nome_label(s: str) -> str:
+        """NFC + strip — tira diferenças sutis tipo 'ã' NFD vs NFC, espaços."""
+        return unicodedata.normalize("NFC", (s or "").strip())
+
+    def _labels_cache(self) -> list[dict]:
+        return (
+            self.service.users().labels().list(userId="me").execute().get("labels", [])
+        )
+
     def _label_id(self, nome: str) -> str | None:
-        labels = self.service.users().labels().list(userId="me").execute().get("labels", [])
-        return next((l["id"] for l in labels if l["name"] == nome), None)
+        """Resolve ID de label por nome.
+
+        Robusto a:
+          - Normalização Unicode (NFC vs NFD — 'ã' decomposto)
+          - Espaços em branco nas pontas
+          - Diferenças de case ("Processado" vs "processado")
+        """
+        alvo = self._normalizar_nome_label(nome)
+        alvo_lower = alvo.lower()
+        labels = self._labels_cache()
+
+        # 1ª tentativa: exato (após NFC + strip)
+        for l in labels:
+            if self._normalizar_nome_label(l.get("name", "")) == alvo:
+                return l["id"]
+        # 2ª tentativa: case-insensitive
+        for l in labels:
+            if self._normalizar_nome_label(l.get("name", "")).lower() == alvo_lower:
+                return l["id"]
+        return None
+
+    def _msg_tem_label(self, msg: dict, nome_label: str) -> bool:
+        """Checa se uma msg tem uma label, robusto a falha no _label_id.
+
+        Resolve o ID via lookup robusto; se mesmo assim não achar, ainda
+        compara `labelIds` da mensagem contra todos os IDs cujo nome bate.
+        """
+        labels_msg = set(msg.get("labelIds", []) or [])
+        alvo = self._normalizar_nome_label(nome_label).lower()
+        for l in self._labels_cache():
+            if self._normalizar_nome_label(l.get("name", "")).lower() == alvo:
+                if l["id"] in labels_msg:
+                    return True
+        return False
 
     def criar_label(self, nome: str) -> str:
         lid = self._label_id(nome)
@@ -135,28 +178,30 @@ class GmailClient:
 
         Lógica:
           1. Busca threads com label_entrada SEM processado/pendente
+             (filtros -in: SEMPRE adicionados, mesmo se _label_id não achar
+             o ID local — o Gmail faz o match por nome)
           2. Para cada thread, pega messages[0]
-          3. Se messages[0] já tem label processado/pendente, pula a thread
+          3. Se messages[0] tem label processado/pendente (checagem robusta
+             a NFC/case), pula a thread inteira
           4. Retorna lista de messages[0] dos threads não-pulados
         """
         if not self._label_id(label_entrada):
             log.error(f"Label '{label_entrada}' não existe no Gmail")
             return []
 
-        q_parts = [f'in:"{label_entrada}"']
-        if self._label_id(processado):
-            q_parts.append(f'-in:"{processado}"')
-        if self._label_id(pendente):
-            q_parts.append(f'-in:"{pendente}"')
-        q = " ".join(q_parts)
+        # Filtros -in: SEMPRE adicionados (Gmail faz match por nome no
+        # servidor; não dependemos do _label_id local pra montar a query).
+        q = " ".join([
+            f'in:"{label_entrada}"',
+            f'-in:"{processado}"',
+            f'-in:"{pendente}"',
+        ])
+        log.info(f"Gmail query: {q}")
 
         res = self.service.users().threads().list(
             userId="me", q=q, maxResults=50
         ).execute()
         thread_summaries = res.get("threads", [])
-
-        proc_id = self._label_id(processado)
-        pend_id = self._label_id(pendente)
 
         primeiras: list[dict] = []
         for ts in thread_summaries:
@@ -165,10 +210,17 @@ class GmailClient:
             if not msgs:
                 continue
             primeira = msgs[0]
-            labels = set(primeira.get("labelIds", []) or [])
-            if proc_id and proc_id in labels:
+            # Sanity check: a msg raiz NÃO pode ter processado/pendente
+            # (defesa em profundidade caso a query não tenha filtrado bem)
+            if self._msg_tem_label(primeira, processado):
+                log.info(
+                    f"   Pulando thread {ts['id'][:16]}: msg raiz já tem '{processado}'"
+                )
                 continue
-            if pend_id and pend_id in labels:
+            if self._msg_tem_label(primeira, pendente):
+                log.info(
+                    f"   Pulando thread {ts['id'][:16]}: msg raiz já tem '{pendente}'"
+                )
                 continue
             primeiras.append(primeira)
         return primeiras
