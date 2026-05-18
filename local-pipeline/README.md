@@ -21,14 +21,30 @@ Edite `config.json` se quiser ajustar:
 ## Como rodar
 
 ```bash
-# Loop contínuo (default — polling a cada 5 min)
+# Padrão: uma única passada e encerra (ideal pro Windows Task Scheduler)
 python main.py
 
-# Uma única passada (debug)
-python main.py --once
+# Modo loop contínuo (debug / execução manual em terminal)
+python main.py --loop
 ```
 
+A passada faz tudo de uma vez: busca emails novos, processa cada um,
+busca threads aguardando resposta do cliente, reprocessa-os, e encerra.
+
 Logs append-only em `admissao_log.ndjson`.
+
+### Agendar no Windows Task Scheduler (2× por dia)
+
+1. Abra **Agendador de Tarefas** → **Criar Tarefa**
+2. **Geral:** nome `Crosara Admissão Pipeline`, marque *Executar com privilégios mais altos*
+3. **Disparadores:** adicione 2 disparadores diários (ex: 09:00 e 14:00)
+4. **Ações** → *Iniciar um programa*:
+   - **Programa/script:** `C:\Users\Havai\AppData\Local\Programs\Python\Python311\python.exe`
+   - **Argumentos:** `main.py`
+   - **Iniciar em:** `C:\Users\Havai\Desktop\teste eContador\admissao-routine\local-pipeline`
+5. **Condições:** desmarque *Iniciar somente se conectado à rede CA* se quiser rodar sempre
+
+O programa lê `.env` da pasta `Iniciar em`, então tokens são pegos automaticamente.
 
 ## Estrutura
 

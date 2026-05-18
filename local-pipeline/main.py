@@ -716,8 +716,22 @@ def _processar_seguro(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Pipeline de admissão local da Crosara")
-    parser.add_argument("--once", action="store_true", help="Roda uma única passada e sai")
+    parser = argparse.ArgumentParser(
+        description="Pipeline de admissão local da Crosara. "
+                    "Padrão: roda UMA passada (emails novos + threads aguardando "
+                    "cliente) e sai — feito pra Windows Task Scheduler."
+    )
+    parser.add_argument(
+        "--loop",
+        action="store_true",
+        help="Em vez de uma passada, fica em loop infinito fazendo polling "
+             "(intervalo do config.json). Útil pra rodar manualmente em terminal.",
+    )
+    parser.add_argument(
+        "--once",
+        action="store_true",
+        help="(Compatibilidade) idêntico ao padrão.",
+    )
     args = parser.parse_args()
 
     log.info("=" * 70)
@@ -748,11 +762,19 @@ def main() -> int:
     if config.dry_run:
         log.warning("⚠ DRY-RUN ATIVO — não envia POSTs nem emails")
 
-    if args.once:
-        rodar_uma_passada(config, claude, planilha)
+    if not args.loop:
+        # Padrão: uma única passada e encerra (ideal pro Task Scheduler)
+        log.info("▶ Executando passada única...")
+        try:
+            rodar_uma_passada(config, claude, planilha)
+        except Exception as e:
+            log.exception(f"Erro na passada: {e}")
+            return 3
+        log.info("✅ Passada concluída. Encerrando.")
         return 0
 
-    log.info(f"⏱  Polling a cada {config.intervalo}s — Ctrl+C pra parar")
+    # --loop: polling contínuo (uso manual)
+    log.info(f"⏱  Modo loop ativo — polling a cada {config.intervalo}s. Ctrl+C pra parar.")
     while True:
         try:
             rodar_uma_passada(config, claude, planilha)
