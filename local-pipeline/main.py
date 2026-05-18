@@ -86,6 +86,11 @@ class Config:
     dry_run: bool
     claude_model: str
     claude_max_tokens: int
+    # ─── TEMP (REMOVER em produção) ─────────────────────────────
+    # Flag setada via CLI --ask. Quando True, pergunta confirmação
+    # antes de enviar cada email de pendência. Útil durante calibração
+    # do prompt do Claude e regras de extração.
+    confirmar_replies: bool = False
 
 
 def carregar_config() -> Config:
@@ -222,6 +227,45 @@ def email_pendencia(motivo: str, contexto: dict) -> tuple[str, str]:
         f"Pipeline Local — {datetime.now().isoformat(timespec='seconds')}"
     )
     return assunto, corpo
+
+
+# ─── TEMP (REMOVER em produção): confirmação interativa de envio ──────
+# Bloco coeso: 3 funções + 1 uso em _processar_seguro. Pesquise por
+# "TEMP-CONFIRMAR-REPLIES" pra achar tudo de uma vez.
+
+def _previa_reply(msg_orig: dict, corpo: str, cc: str | None) -> str:
+    """TEMP-CONFIRMAR-REPLIES: monta preview legível pra exibir no terminal."""
+    headers = {
+        h["name"].lower(): h["value"]
+        for h in msg_orig.get("payload", {}).get("headers", [])
+    }
+    de = headers.get("from", "?")
+    assunto = headers.get("subject", "?")
+    sep = "─" * 70
+    corpo_trunc = corpo if len(corpo) <= 800 else corpo[:800] + "\n[...corpo truncado...]"
+    return (
+        f"\n{sep}\n"
+        f"📨 PREVIEW DA RESPOSTA PRO CLIENTE\n"
+        f"  Para:    {de}\n"
+        f"  CC:      {cc or '(nenhum)'}\n"
+        f"  Assunto: Re: {assunto[:80]}\n"
+        f"\n{corpo_trunc}\n"
+        f"{sep}"
+    )
+
+
+def _confirmar_envio(msg_orig: dict, corpo: str, cc: str | None) -> bool:
+    """TEMP-CONFIRMAR-REPLIES: imprime preview e pergunta s/N. Default N."""
+    print(_previa_reply(msg_orig, corpo, cc))
+    try:
+        resp = input("Enviar este email? [s/N]: ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()  # quebra de linha após ^C
+        return False
+    return resp in ("s", "sim", "y", "yes")
+
+
+# ─── fim do bloco TEMP-CONFIRMAR-REPLIES ──────────────────────────────
 
 
 def _raise_pendencia(
@@ -683,23 +727,37 @@ def _processar_seguro(
 
         # 2. Resposta no thread (preferido) OU email seco pro DP (fallback)
         reply_enviado = False
+        envio_pulado_pelo_usuario = False  # TEMP-CONFIRMAR-REPLIES
         if msg_pra_resposta and e_e_pendencia:
             try:
                 corpo = email_resposta_cliente(
                     payload_parcial, campos_faltando, motivo_livre=motivo_cliente
                 )
-                gmail.responder_no_thread(
-                    msg_pra_resposta, corpo=corpo, cc=config.email_dp or None
-                )
-                reply_enviado = True
-                log.info(
-                    f"   📨 Reply enviado no thread "
-                    f"(cliente + DP em CC)"
-                )
+                # ─── TEMP-CONFIRMAR-REPLIES (remover este if em produção) ─
+                if config.confirmar_replies and not _confirmar_envio(
+                    msg_pra_resposta, corpo, config.email_dp or None
+                ):
+                    log.warning("   ✋ Envio cancelado pelo usuário (--ask)")
+                    envio_pulado_pelo_usuario = True
+                # ─── fim TEMP-CONFIRMAR-REPLIES ───────────────────────────
+                else:
+                    gmail.responder_no_thread(
+                        msg_pra_resposta, corpo=corpo, cc=config.email_dp or None
+                    )
+                    reply_enviado = True
+                    log.info(
+                        f"   📨 Reply enviado no thread "
+                        f"(cliente + DP em CC)"
+                    )
             except Exception:
                 log.exception("Falha enviando reply no thread")
 
-        if not reply_enviado and config.email_dp:
+        # Fallback email seco pro DP — pula se usuário cancelou (--ask)
+        if (
+            not reply_enviado
+            and not envio_pulado_pelo_usuario  # TEMP-CONFIRMAR-REPLIES
+            and config.email_dp
+        ):
             try:
                 assunto, corpo = email_pendencia(str(e), {})
                 gmail.enviar_email(config.email_dp, assunto, corpo)
@@ -732,6 +790,15 @@ def main() -> int:
         action="store_true",
         help="(Compatibilidade) idêntico ao padrão.",
     )
+    # ─── TEMP-CONFIRMAR-REPLIES (remover em produção) ────────────────
+    parser.add_argument(
+        "--ask",
+        action="store_true",
+        help="[TEMP] Antes de enviar cada email de pendência, mostra preview "
+             "e pergunta confirmação no terminal. Use durante calibração; "
+             "deve ser REMOVIDO em produção (incompatível com Task Scheduler).",
+    )
+    # ─── fim TEMP-CONFIRMAR-REPLIES ──────────────────────────────────
     args = parser.parse_args()
 
     log.info("=" * 70)
@@ -743,6 +810,15 @@ def main() -> int:
     except (FileNotFoundError, ValueError, json.JSONDecodeError) as e:
         log.error(f"Erro de configuração: {e}")
         return 1
+
+    # ─── TEMP-CONFIRMAR-REPLIES (remover em produção) ────────────────
+    config.confirmar_replies = args.ask
+    if config.confirmar_replies:
+        log.warning(
+            "⚠ MODO --ask ATIVO: cada email de pendência exigirá confirmação "
+            "no terminal antes do envio."
+        )
+    # ─── fim TEMP-CONFIRMAR-REPLIES ──────────────────────────────────
 
     bootstrap_arquivos_locais()
 
