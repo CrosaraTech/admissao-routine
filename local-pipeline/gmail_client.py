@@ -38,6 +38,12 @@ import httplib2
 log = logging.getLogger("admissao.gmail")
 
 
+# Label aplicada em TODA mensagem enviada pelo bot (resposta no thread).
+# Usada pra distinguir o que o bot escreveu do que o colaborador escreveu —
+# detecção por `From:` falha quando o colaborador usa a mesma conta Gmail.
+LABEL_BOT_ENVIADO = "Bot-Crosara/Enviado"
+
+
 GMAIL_SCOPES_DEFAULT = [
     "https://www.googleapis.com/auth/gmail.readonly",
     "https://www.googleapis.com/auth/gmail.modify",
@@ -384,7 +390,20 @@ class GmailClient:
 
         raw = base64.urlsafe_b64encode(mime.as_bytes()).decode()
         body = {"raw": raw, "threadId": msg_original.get("threadId")}
-        self.service.users().messages().send(userId="me", body=body).execute()
+        sent = self.service.users().messages().send(userId="me", body=body).execute()
+
+        # Marca a msg recém-enviada com a label do bot. Sem isso, não dá pra
+        # distinguir essa resposta de uma escrita manualmente pelo colaborador
+        # logado na mesma conta Gmail.
+        sent_id = sent.get("id")
+        if sent_id:
+            try:
+                self.aplicar_label(sent_id, LABEL_BOT_ENVIADO)
+            except Exception as e:
+                log.warning(
+                    f"Falha aplicando label '{LABEL_BOT_ENVIADO}' na msg "
+                    f"{sent_id}: {e} — detecção de bot pode falhar nesse thread"
+                )
 
     # ---- Continuação de thread (resposta do cliente) -------------
 
@@ -401,8 +420,14 @@ class GmailClient:
         return ""
 
     def _eh_do_bot(self, msg: dict) -> bool:
-        bot = self.meu_email()
-        return bool(bot) and bot in self._from_de(msg)
+        """Detecta mensagem que o bot enviou.
+
+        Checa a label `Bot-Crosara/Enviado` aplicada explicitamente após
+        cada `responder_no_thread`. Comparação por From: foi descartada
+        porque o colaborador pode estar logado na mesma conta Gmail e
+        escrever manualmente — daria falso positivo.
+        """
+        return self._msg_tem_label(msg, LABEL_BOT_ENVIADO)
 
     def buscar_threads_aguardando_cliente(self, label_pendente: str) -> list[dict]:
         """Threads marcados ADMISSÃO/pendente cuja ÚLTIMA mensagem é do cliente
