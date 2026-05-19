@@ -731,9 +731,26 @@ def _processar_um_bloco(
         departamentos_json_paths=[DEPARTAMENTOS_FILE, ROOT.parent / "departamentos.json"],
     )
     if depto_msg != "ok":
-        log.warning(f"      🗂 Depto não resolvido: {depto_msg} — seguindo sem")
-    else:
-        log.info(f"      🗂 Depto: {depto_id}")
+        # Departamento é nosso cadastro (eContador + departamentos.json), não
+        # responsabilidade do cliente. NÃO escala pro cliente — pendência interna.
+        deptos_disponiveis = (
+            "; ".join(f"{d['nome']} (id={d['id']})" for d in deptos_api[:15])
+            if deptos_api else "(empresa sem departamentos retornados pela API)"
+        )
+        return _resultado_pendencia_interna(
+            indice=indice, nome=nome, razao=razao, cnpj=cnpj,
+            erro=f"Departamento não resolvido: {depto_msg}",
+            diagnostico_dp=(
+                f"Empresa {razao} (CNPJ {cnpj}) — {depto_msg}\n"
+                f"Departamentos disponíveis no eContador: {deptos_disponiveis}\n"
+                f"Resolver: (a) configurar `departamento_default_id` em "
+                f"departamentos.json pra essa empresa, ou (b) adicionar "
+                f"`nome_variantes` que cubra o nome usado no email, ou "
+                f"(c) cadastrar manualmente escolhendo um departamento."
+            ),
+            bloco=bloco,
+        )
+    log.info(f"      🗂 Depto: {depto_id}")
 
     # Função — pendências aqui são INTERNAS (problema do nosso cadastro/planilha,
     # não do cliente). Não escala pro cliente; vira email seco pro DP.

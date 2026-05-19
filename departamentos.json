@@ -1,7 +1,8 @@
 {
   "_instrucoes": {
     "modo_unico": "Empresa usa apenas um departamento para todos os funcionários. Usar departamento_id fixo.",
-    "modo_multiplo": "Empresa usa departamentos reais. Claude faz match fuzzy do departamento da ficha contra a lista.",
+    "modo_multiplo": "Empresa usa departamentos reais. Claude faz match fuzzy do departamento da ficha contra a lista de nome_variantes.",
+    "departamento_default_id": "OPCIONAL no modo multiplo. ID do departamento a usar quando o Claude NÃO conseguir extrair sugestão do email (cliente não mencionou). Sem isso, depto não resolvido vira pendência interna pro DP escolher manualmente.",
     "como_adicionar": "Adicione o CNPJ apenas com dígitos (14 caracteres) como chave."
   },
   "empresas": {

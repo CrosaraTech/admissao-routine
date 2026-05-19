@@ -145,9 +145,20 @@ def _resolver_fuzzy_especial(
         )
 
     if not departamento_sugerido:
+        # Fallback: se a empresa tem `departamento_default_id` configurado,
+        # usa esse direto sem precisar do Claude extrair (mais tolerante).
+        default_id = cfg.get("departamento_default_id")
+        if default_id:
+            log.info(
+                f"[REGRA 3-default] {cfg.get('razao_social', cnpj_d)}: "
+                f"sem sugestão do Claude → usando departamento_default_id={default_id}"
+            )
+            return str(default_id), "ok"
         return None, (
             f"Empresa {cfg.get('razao_social', cnpj_d)} é multi-departamento; "
-            f"Claude não extraiu departamento_sugerido do email/anexos."
+            f"Claude não extraiu departamento_sugerido do email/anexos e a "
+            f"empresa não tem `departamento_default_id` configurado em "
+            f"departamentos.json."
         )
 
     sug_norm = _norm(departamento_sugerido)
