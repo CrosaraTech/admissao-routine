@@ -4,9 +4,9 @@
     "token": ""
   },
   "gmail": {
-    "label_entrada": "ADMISSÃO",
-    "label_processado": "ADMISSÃO/processado",
-    "label_pendente": "ADMISSÃO/pendente"
+    "label_entrada": "JOAOMARCOS-TESTE",
+    "label_processado": "JOAOMARCOS-TESTE/processado",
+    "label_pendente": "JOAOMARCOS-TESTE/pendente"
   },
   "dp": {
     "email_notificacao": "pessoal@contabilidadehavai.com.br"
