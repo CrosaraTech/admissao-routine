@@ -48,8 +48,12 @@ CAMPOS_MANUAIS_DP = [
 # Campos obrigatórios pra subir a admissão (lista do eContador, captura tela).
 # Faltando qualquer um → pendência (DP completa manual e o e-mail vira pendente).
 #
-# `numero` é NÃO obrigatório por design — briefing diz que 0 significa "sem número"
-# e a API exige Integer (não aceita "SN" string).
+# Endereço (cep/rua/bairro/cidade/estado) NÃO é obrigatório aqui — a analista
+# de DP preenche manualmente quando o cliente envia. Cliente normalmente
+# manda comprovante de endereço numa etapa separada.
+#
+# `numero` também NÃO é obrigatório (briefing: 0 significa "sem número",
+# API exige Integer e não aceita "SN" string).
 ATTRS_OBRIGATORIOS = [
     "nome",
     "cpf",
@@ -57,10 +61,6 @@ ATTRS_OBRIGATORIOS = [
     "nascimento",
     "nomedamae",
     "municipionascimento",
-    "cep",
-    "rua",
-    "bairro",
-    "cidade",
     "diascontratoexperiencia",
     "primeiroemprego",
     "salario",
@@ -76,7 +76,6 @@ RELS_OBRIGATORIOS = [
     "escolaridade",
     "naturalidade",
     "paisnascimento",
-    "estado",  # estado do endereço
     "tipoadmissao",
     "categoriawdp",  # Categoria
     "formapagamento",
@@ -110,6 +109,66 @@ LABELS_AMIGAVEIS = {
     "categoriawdp": "Categoria",
     "formapagamento": "Forma de Pagamento",
 }
+
+
+def aplicar_regra_data_admissao(payload: dict, hoje: "datetime.date | None" = None) -> tuple[dict, str | None]:
+    """Aplica regra de negócio: data de admissão = ASO + 1 dia (default).
+
+    Cenários (todos olhando attrs.admissao e attrs.dataatestadoocupacional):
+      A) admissao já presente → mantém, valida apenas que não está no passado
+      B) admissao ausente e ASO presente → seta admissao = ASO + 1 dia
+      C) ambos ausentes → retorna erro pedindo data
+
+    Regra adicional pra A e B: se a data resultante < hoje (no passado),
+    retorna erro — admissão retroativa não é permitida pelas regras do
+    cliente (admissão precisa ser >= data corrente).
+
+    Retorna (payload_atualizado, erro_motivo_cliente_ou_None).
+    Quando erro → o caller deve transformar em pendência cliente.
+    """
+    import datetime as _dt
+    if hoje is None:
+        hoje = _dt.date.today()
+
+    data = payload.get("data") or {}
+    attrs = dict(data.get("attributes") or {})
+
+    def _parse(s):
+        if not s:
+            return None
+        try:
+            return _dt.date.fromisoformat(str(s)[:10])
+        except (ValueError, TypeError):
+            return None
+
+    admissao = _parse(attrs.get("admissao"))
+    aso = _parse(attrs.get("dataatestadoocupacional"))
+
+    if admissao is None:
+        if aso is None:
+            return payload, (
+                "Não consegui identificar a data de admissão nem a data "
+                "do exame admissional (ASO). Pode informar uma delas?"
+            )
+        admissao = aso + _dt.timedelta(days=1)
+        attrs["admissao"] = admissao.isoformat()
+        # Recalcula data término contrato (admissão + dias experiência)
+        dias = int(attrs.get("diascontratoexperiencia") or 30)
+        attrs["dataterminocontrato"] = (admissao + _dt.timedelta(days=dias)).isoformat()
+
+    # Validação: admissão não pode ser no passado
+    if admissao < hoje:
+        return payload, (
+            f"A data de admissão ({admissao.strftime('%d/%m/%Y')}) ficou no "
+            f"passado — a admissão precisa ser igual ou posterior à data "
+            f"de hoje ({hoje.strftime('%d/%m/%Y')}). Pode informar uma "
+            f"data de admissão futura, ou um ASO mais recente?"
+        )
+
+    out = dict(payload)
+    out["data"] = dict(data)
+    out["data"]["attributes"] = attrs
+    return out, None
 
 
 def validar_campos_obrigatorios(payload: dict) -> list[str]:

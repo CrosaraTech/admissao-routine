@@ -44,6 +44,7 @@ from funcao import carregar_planilha, resolver_funcao
 from gmail_client import GmailClient
 from payload_builder import (
     CAMPOS_MANUAIS_DP,
+    aplicar_regra_data_admissao,
     extrair_dados_consulta,
     finalizar_payload,
     normalizar_admissoes,
@@ -742,6 +743,18 @@ def _processar_um_bloco(
 
     # Payload final + sanitização
     payload = finalizar_payload(bloco, empresa_id, depto_id, funcao_id)
+
+    # Regra de negócio da data de admissão (default = ASO + 1 dia,
+    # rejeita se < hoje). Pendência aqui é DO CLIENTE — ele que tem
+    # que confirmar/atualizar a data.
+    payload, erro_data = aplicar_regra_data_admissao(payload)
+    if erro_data:
+        log.warning(f"      📅 Data de admissão inválida ({nome}): {erro_data}")
+        _raise_pendencia(
+            f"Data de admissão inválida pra {nome}: {erro_data}",
+            motivo_cliente=erro_data,
+            payload_parcial=payload,
+        )
 
     # Snapshot pra auditoria
     resolucao = {

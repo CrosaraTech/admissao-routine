@@ -48,6 +48,29 @@ Você está rodando dentro do pipeline local da Crosara Contabilidade.
 - Extraia TODOS os campos seguindo o briefing acima.
 - Retorne APENAS o JSON do payload, dentro de um bloco ```json ... ```.
 - NÃO inclua comentários, explicação ou texto antes/depois do JSON.
+
+## LEITURA CUIDADOSA DE IMAGENS DE DOCUMENTOS
+
+As fotos de RG, CPF, CTPS, título eleitoral etc. frequentemente vêm:
+  - ROTACIONADAS (90/180/270 graus) ou de cabeça pra baixo
+  - Tortas, com luz ruim, manchadas
+  - Com texto em MAIÚSCULAS pequenas (cartão de identidade)
+  - Com frente E verso na mesma imagem (cada lado em uma orientação)
+
+ANTES de marcar campo como "não encontrado", examine CADA imagem em
+TODAS as orientações possíveis. Procure ativamente por:
+  - `identidade` (RG): número com 7+ dígitos, frequentemente rotulado
+    "REGISTRO GERAL", "RG" ou "Nº". Ex: "9.462.146" ou "94.62146"
+  - `dataidentidade`: rotulada "DATA DE EXPEDIÇÃO", formato DD/MM/AAAA
+  - `orgaoemissoridentidade`: sigla do órgão, ex: "SSP/SP", "SDS/PE",
+    "SSP/GO", "SECC/RJ"
+  - `nascimento`: rotulada "DATA DE NASCIMENTO", formato DD/MM/AAAA
+  - `nomedamae`: rotulado "FILIAÇÃO" ou "MÃE" (geralmente vem 2 nomes
+    — pai primeiro, mãe segundo, ou vice-versa)
+  - `naturalidade`: rotulada "NATURALIDADE" — cidade + UF (ex: "Itacuruba-PE")
+
+Se um campo está VISÍVEL na imagem, EXTRAIA mesmo que a imagem esteja
+inclinada/girada. Só marque como faltante se realmente não conseguir ler.
 - Os IDs de `empresa`, `departamento` e `funcao` serão substituídos pelo
   pipeline depois — use placeholders "1" nesses 3 relationships.
 - Se faltarem dados essenciais (lista da seção 10 do briefing), OU se o
