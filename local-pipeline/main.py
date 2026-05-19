@@ -46,6 +46,7 @@ from payload_builder import (
     CAMPOS_MANUAIS_DP,
     extrair_dados_consulta,
     finalizar_payload,
+    normalizar_admissoes,
     validar_campos_obrigatorios,
 )
 
@@ -464,6 +465,18 @@ def processar_admissao(
     config: Config,
     ids_label_pendente_remover: list[str],
 ) -> None:
+    """Orquestrador: Claude → quebra em N blocos de admissão → processa cada
+    independentemente → agrega resultados → label + email no fim.
+
+    Casos:
+      - 1 admissão: igual ao comportamento antigo
+      - N admissões no mesmo email: cada uma vira um candidato no eContador.
+        Empresa/departamentos vêm de cache se compartilhados (mesmo CNPJ).
+        Função pode variar por funcionário (cargo diferente cada).
+        Se todas passarem → label processado, email DP com a lista.
+        Se alguma falhar → label pendente, reply no thread com status por
+        nome (quem foi cadastrado e quem ainda precisa de info).
+    """
     log.info(f"📧 {msg_id} | {metadados.get('assunto', '')[:60]}")
     log.info(f"   Corpo: {len(corpo)} chars | Anexos: {len(anexos)}")
 
@@ -471,122 +484,206 @@ def processar_admissao(
         _raise_pendencia(
             "Email sem corpo nem anexos PDF/imagem",
             motivo_cliente=(
-                "Não recebemos nenhuma informação ou anexo nessa mensagem. "
-                "Pode reenviar os documentos do candidato (ficha de admissão, RG, "
-                "CTPS, comprovante de endereço, etc.)?"
+                "Não recebi nenhuma informação ou anexo nessa mensagem. "
+                "Pode reenviar a ficha de admissão com os documentos "
+                "(RG, CPF, CTPS, comprovante de endereço, ASO)?"
             ),
         )
 
-    # 2. Claude extrai os campos e devolve payload mais o cnpj/departamento sugeridos
+    # 1. Claude — 1 chamada que pode devolver N admissões
     resposta_claude = claude.gerar_payload(corpo, metadados, anexos)
-    dados = extrair_dados_consulta(resposta_claude)
 
-    if dados["pendente"]:
-        motivo = dados["motivo_pendencia"] or "Dados insuficientes"
+    # 2. Claude marcou pendente total? Curto-circuita.
+    if resposta_claude.get("_pendente"):
+        motivo = resposta_claude.get("_motivo") or "Dados insuficientes"
         _raise_pendencia(
             f"Claude marcou como pendente: {motivo}",
             motivo_cliente=motivo,
             payload_parcial=resposta_claude,
         )
 
-    cnpj = dados["cnpj_empresa"]
-    if not cnpj:
+    # 3. Normaliza pra lista de blocos (1 ou N)
+    blocos = normalizar_admissoes(resposta_claude)
+    if not blocos:
         _raise_pendencia(
-            "Claude não extraiu o CNPJ da empresa",
+            "Resposta do Claude sem admissões processáveis",
             motivo_cliente=(
-                "Não conseguimos identificar o CNPJ da empresa contratante "
-                "nos documentos enviados. Pode informar o CNPJ na resposta?"
+                "Não consegui identificar nenhuma admissão completa nos "
+                "documentos. Pode reenviar a ficha com os dados do candidato?"
             ),
             payload_parcial=resposta_claude,
         )
 
-    # 3. Empresa
-    empresa_id, empresa_attrs = api.resolver_empresa(cnpj)
+    log.info(f"   📋 {len(blocos)} admissão(ões) detectada(s)")
+
+    # 4. Caches compartilhados entre blocos do mesmo email (geralmente
+    #    mesmo CNPJ → mesma empresa, mesmos departamentos)
+    cache_empresa: dict[str, tuple[str | None, dict]] = {}
+    cache_deptos: dict[str, list[dict]] = {}
+
+    # 5. Processa cada bloco; pega exceptions de pendência individualmente
+    resultados: list[dict] = []
+    for i, bloco in enumerate(blocos, 1):
+        attrs_pre = (bloco.get("data") or {}).get("attributes") or {}
+        nome_pre = attrs_pre.get("nome") or f"funcionário #{i}"
+        try:
+            r = _processar_um_bloco(
+                bloco=bloco, indice=i, total=len(blocos),
+                msg_id=msg_id, metadados=metadados,
+                api=api, claude=claude, planilha_cbo=planilha_cbo,
+                config=config, corpo=corpo, anexos=anexos,
+                cache_empresa=cache_empresa, cache_deptos=cache_deptos,
+            )
+            resultados.append(r)
+        except ValueError as e:
+            log.exception(f"   ❌ [{i}/{len(blocos)}] {nome_pre}: {e}")
+            resultados.append({
+                "indice": i,
+                "nome": nome_pre,
+                "ok": False,
+                "candidato_id": None,
+                "erro_tecnico": str(e),
+                "motivo_cliente": getattr(e, "motivo_cliente", None) or str(e),
+                "campos_faltando": getattr(e, "campos_faltando", []) or [],
+                "payload_parcial": getattr(e, "payload_parcial", None) or bloco,
+                "razao_social": None,
+            })
+
+    # 6. Agrega: label, reply ou email DP, log
+    _finalizar_lote(
+        resultados, msg_id, msg_pra_resposta,
+        ids_label_pendente_remover, gmail, config,
+    )
+
+
+def _processar_um_bloco(
+    *, bloco: dict, indice: int, total: int,
+    msg_id: str, metadados: dict,
+    api: EContadorAPI, claude: ClaudeClient, planilha_cbo: list[dict],
+    config: Config, corpo: str, anexos: list[dict],
+    cache_empresa: dict, cache_deptos: dict,
+) -> dict:
+    """Processa UM bloco de admissão. Retorna dict de resultado.
+    Levanta ValueError (via _raise_pendencia) se pendência for específica deste bloco.
+    """
+    attrs = (bloco.get("data") or {}).get("attributes") or {}
+    nome = attrs.get("nome") or f"funcionário #{indice}"
+    log.info(f"   👤 [{indice}/{total}] {nome}")
+
+    dados = extrair_dados_consulta(bloco)
+    cnpj = dados["cnpj_empresa"]
+    if not cnpj:
+        _raise_pendencia(
+            f"CNPJ ausente para {nome}",
+            motivo_cliente=(
+                f"Pra cadastrar {nome}, preciso do CNPJ da empresa "
+                f"contratante. Não consegui identificar nos documentos."
+            ),
+            payload_parcial=bloco,
+        )
+
+    # Empresa (cache)
+    if cnpj in cache_empresa:
+        empresa_id, empresa_attrs = cache_empresa[cnpj]
+    else:
+        empresa_id, empresa_attrs = api.resolver_empresa(cnpj)
+        cache_empresa[cnpj] = (empresa_id, empresa_attrs)
     if not empresa_id:
         _raise_pendencia(
             f"CNPJ {cnpj} não encontrado em /empresas",
             motivo_cliente=(
-                f"O CNPJ {cnpj} não está cadastrado no nosso sistema. "
-                f"Pode confirmar se o CNPJ está correto?"
+                f"O CNPJ {cnpj} (referenciado pra {nome}) não está "
+                f"cadastrado no nosso sistema. Pode confirmar?"
             ),
-            payload_parcial=resposta_claude,
+            payload_parcial=bloco,
         )
     razao = empresa_attrs.get("nome", "?")
-    log.info(f"   🏢 Empresa {empresa_id}: {razao}")
+    log.info(f"      🏢 Empresa {empresa_id}: {razao}")
 
-    # 4. Departamento
-    deptos_api = api.listar_departamentos(empresa_id)
+    # Departamento (cache de listagem por empresa)
+    if empresa_id in cache_deptos:
+        deptos_api = cache_deptos[empresa_id]
+    else:
+        deptos_api = api.listar_departamentos(empresa_id)
+        cache_deptos[empresa_id] = deptos_api
     depto_id, depto_msg = resolver_departamento(
-        empresa_id=empresa_id,
-        cnpj_empresa=cnpj,
-        razao_social=razao,
-        deptos_api=deptos_api,
-        departamento_sugerido=dados["departamento_sugerido"],
+        empresa_id=empresa_id, cnpj_empresa=cnpj, razao_social=razao,
+        deptos_api=deptos_api, departamento_sugerido=dados["departamento_sugerido"],
         departamentos_json_paths=[DEPARTAMENTOS_FILE, ROOT.parent / "departamentos.json"],
     )
     if depto_msg != "ok":
-        log.warning(f"   🗂 Depto não resolvido: {depto_msg} — seguindo sem")
+        log.warning(f"      🗂 Depto não resolvido: {depto_msg} — seguindo sem")
     else:
-        log.info(f"   🗂 Depto: {depto_id}")
+        log.info(f"      🗂 Depto: {depto_id}")
 
-    # 5. Função
+    # Função
     funcao_id, conf, ambiguos, fmsg = resolver_funcao(
         planilha_cbo, dados["cargo"], dados["cbo"]
     )
     if funcao_id is None and ambiguos:
-        log.info(f"   💼 Função ambígua ({len(ambiguos)} candidatos) — re-prompt Claude")
-        resposta_claude2 = claude.gerar_payload(
-            corpo, metadados, anexos, funcoes_candidatas=ambiguos
-        )
-        dados2 = extrair_dados_consulta(resposta_claude2)
-        funcao_id2, conf2, _ambig2, fmsg2 = resolver_funcao(
-            planilha_cbo, dados2["cargo"], dados2["cbo"]
-        )
-        if funcao_id2:
-            funcao_id, conf, fmsg = funcao_id2, conf2, fmsg2
-            resposta_claude = resposta_claude2
+        log.info(f"      💼 Ambíguo ({len(ambiguos)}) — re-prompt Claude")
+        resposta2 = claude.gerar_payload(corpo, metadados, anexos, funcoes_candidatas=ambiguos)
+        # Localiza o bloco correspondente na resposta2 por nome/CPF
+        blocos2 = normalizar_admissoes(resposta2)
+        bloco2 = _localizar_bloco_correspondente(blocos2, attrs)
+        if bloco2:
+            dados2 = extrair_dados_consulta(bloco2)
+            funcao_id2, conf2, _amb, fmsg2 = resolver_funcao(
+                planilha_cbo, dados2["cargo"], dados2["cbo"]
+            )
+            if funcao_id2:
+                funcao_id, conf, bloco = funcao_id2, conf2, bloco2
+            else:
+                _raise_pendencia(
+                    f"Função ainda ambígua para {nome}: {fmsg2}",
+                    motivo_cliente=(
+                        f"O cargo de {nome} ({dados.get('cargo')}) tem variantes "
+                        f"parecidas no nosso cadastro. Pode informar o nome EXATO "
+                        f"do cargo (e o código CBO, se tiver)?"
+                    ),
+                    payload_parcial=bloco,
+                )
         else:
-            cargo = dados.get("cargo") or "?"
             _raise_pendencia(
-                f"Função ainda ambígua após re-prompt: {fmsg2}",
+                f"Re-prompt sem bloco correspondente pra {nome}",
                 motivo_cliente=(
-                    f"O cargo informado ({cargo}) tem várias variantes parecidas "
-                    f"no nosso cadastro. Pode informar o nome EXATO do cargo "
-                    f"(e o código CBO, se tiver)?"
+                    f"O cargo de {nome} ({dados.get('cargo')}) ficou ambíguo. "
+                    f"Pode informar o nome EXATO do cargo (e o CBO, se tiver)?"
                 ),
-                payload_parcial=resposta_claude,
+                payload_parcial=bloco,
             )
     elif funcao_id is None:
-        cargo = dados.get("cargo") or "?"
         _raise_pendencia(
             f"Função: {fmsg}",
             motivo_cliente=(
-                f"O cargo informado ({cargo}) não está cadastrado no nosso "
-                f"sistema. Pode informar um nome de cargo equivalente, ou "
-                f"o código CBO?"
+                f"O cargo de {nome} ({dados.get('cargo')}) não está cadastrado "
+                f"no nosso sistema. Pode informar um cargo equivalente, ou o CBO?"
             ),
-            payload_parcial=resposta_claude,
+            payload_parcial=bloco,
         )
-    log.info(f"   💼 Função: {funcao_id} ({conf:.0%})")
+    log.info(f"      💼 Função: {funcao_id} ({conf:.0%})")
 
-    # 6. Payload final
-    payload = finalizar_payload(resposta_claude, empresa_id, depto_id, funcao_id)
-    log.info(
-        f"   📦 Payload: {len(payload['data']['attributes'])} attrs + "
-        f"{len(payload['data']['relationships'])} rels"
-    )
+    # Payload final + sanitização
+    payload = finalizar_payload(bloco, empresa_id, depto_id, funcao_id)
 
-    # 6.5 Validação determinística — campos obrigatórios pelo eContador
+    # Snapshot pra auditoria
+    resolucao = {
+        "indice": indice, "total": total, "nome": nome,
+        "cnpj_empresa": cnpj, "empresa_id": empresa_id,
+        "razao_social": razao,
+        "departamento_id": depto_id, "departamento_motivo": depto_msg,
+        "departamento_sugerido": dados.get("departamento_sugerido"),
+        "funcao_id": funcao_id, "funcao_confianca": round(conf, 4),
+        "cargo_extraido": dados.get("cargo"),
+        "cbo_extraido": dados.get("cbo"),
+    }
+
+    # Validação determinística
     faltando = validar_campos_obrigatorios(payload)
     if faltando:
-        log.error(f"   ⛔ Campos obrigatórios faltando: {faltando}")
+        log.error(f"      ⛔ Campos faltando ({nome}): {faltando}")
         salvar_payload(
-            msg_id, metadados, payload,
-            resolucao={
-                "cnpj_empresa": cnpj, "empresa_id": empresa_id,
-                "razao_social": razao, "departamento_id": depto_id,
-                "funcao_id": funcao_id,
-            },
+            msg_id, metadados, payload, resolucao=resolucao,
             resultado={
                 "status": "pendente_validacao", "candidato_id": None,
                 "erro": "Campos obrigatórios faltando",
@@ -594,83 +691,242 @@ def processar_admissao(
             },
         )
         _raise_pendencia(
-            f"Campos obrigatórios faltando: {', '.join(faltando)}",
+            f"Campos faltando para {nome}: {', '.join(faltando)}",
             motivo_cliente="",  # ignorado quando campos_faltando está populado
             campos_faltando=faltando,
             payload_parcial=payload,
         )
 
-    # Snapshot resolução pra auditoria (vai pro arquivo do payload)
-    resolucao = {
-        "cnpj_empresa": cnpj,
-        "empresa_id": empresa_id,
-        "razao_social": razao,
-        "departamento_id": depto_id,
-        "departamento_motivo": depto_msg,
-        "departamento_sugerido": dados.get("departamento_sugerido"),
-        "funcao_id": funcao_id,
-        "funcao_confianca": round(conf, 4),
-        "cargo_extraido": dados.get("cargo"),
-        "cbo_extraido": dados.get("cbo"),
-    }
-
-    # Salva payload antes do POST (preserva mesmo se crashar)
     arq_payload = salvar_payload(msg_id, metadados, payload, resolucao=resolucao)
-    log.info(f"   💾 Payload salvo em {arq_payload.relative_to(ROOT)}")
 
     if config.dry_run:
-        log.info("   DRY-RUN — pulando POST")
+        log.info(f"      DRY-RUN — pulando POST de {nome}")
         salvar_payload(
             msg_id, metadados, payload, resolucao=resolucao,
             resultado={"status": "dry_run", "candidato_id": None, "erro": None},
         )
-        log_jsonl({"msg_id": msg_id, "status": "dry_run", "payload_path": str(arq_payload.name)})
-        return
+        return {
+            "indice": indice, "nome": nome, "ok": True,
+            "candidato_id": None, "dry_run": True,
+            "razao_social": razao,
+            "empresa_id": empresa_id, "departamento_id": depto_id, "funcao_id": funcao_id,
+            "payload_path": str(arq_payload.name),
+        }
 
-    # 7. POST candidato
     ok, ref, body_err = api.post_candidato(payload)
     if ok:
         candidato_id = ref
-        log.info(f"   ✅ Candidato {candidato_id} criado")
-        # Limpa label pendente de mensagens antigas (caso veio de reprocessamento)
+        log.info(f"      ✅ Candidato {candidato_id} criado pra {nome}")
+        salvar_payload(
+            msg_id, metadados, payload, resolucao=resolucao,
+            resultado={"status": "sucesso", "candidato_id": candidato_id, "erro": None},
+        )
+        return {
+            "indice": indice, "nome": nome, "ok": True,
+            "candidato_id": candidato_id,
+            "razao_social": razao,
+            "empresa_id": empresa_id, "departamento_id": depto_id, "funcao_id": funcao_id,
+            "payload_path": str(arq_payload.name),
+        }
+
+    log.error(f"      ❌ POST falhou pra {nome}: {ref}\n{body_err}")
+    salvar_payload(
+        msg_id, metadados, payload, resolucao=resolucao,
+        resultado={"status": "falha_post", "candidato_id": None,
+                   "erro": ref, "body": body_err[:2000]},
+    )
+    return {
+        "indice": indice, "nome": nome, "ok": False,
+        "candidato_id": None,
+        "erro_tecnico": f"{ref}: {body_err[:200]}",
+        "motivo_cliente": (
+            f"Falha técnica ao enviar {nome} pro eContador ({ref}). "
+            f"O DP foi avisado e vai investigar."
+        ),
+        "campos_faltando": [],
+        "razao_social": razao,
+        "payload_path": str(arq_payload.name),
+    }
+
+
+def _localizar_bloco_correspondente(blocos: list[dict], attrs_alvo: dict) -> dict | None:
+    """Acha o bloco em `blocos` cujo CPF ou nome bate com `attrs_alvo`."""
+    cpf_alvo = str(attrs_alvo.get("cpf", "")).strip() or None
+    nome_alvo = (attrs_alvo.get("nome") or "").strip().upper() or None
+    for b in blocos:
+        a = (b.get("data") or {}).get("attributes") or {}
+        if cpf_alvo and str(a.get("cpf", "")).strip() == cpf_alvo:
+            return b
+        if nome_alvo and (a.get("nome") or "").strip().upper() == nome_alvo:
+            return b
+    # Fallback: se só tem 1 bloco, retorna ele
+    return blocos[0] if len(blocos) == 1 else None
+
+
+def _finalizar_lote(
+    resultados: list[dict],
+    msg_id: str,
+    msg_pra_resposta: dict,
+    ids_label_pendente_remover: list[str],
+    gmail: GmailClient,
+    config: Config,
+) -> None:
+    """Após processar N admissões: decide label, manda 1 email consolidado,
+    loga cada resultado."""
+    if not resultados:
+        log.warning("   _finalizar_lote chamado sem resultados")
+        return
+
+    n_ok = sum(1 for r in resultados if r["ok"])
+    n_total = len(resultados)
+    log.info(f"   📊 Resultado do lote: {n_ok}/{n_total} sucesso")
+
+    todos_ok = (n_ok == n_total)
+
+    if todos_ok:
+        # Limpa pendente de msgs antigas e marca processado
         for mid in ids_label_pendente_remover:
             try:
                 gmail.remover_label(mid, config.label_pendente)
             except Exception as e:
                 log.warning(f"   Falha removendo pendente de {mid}: {e}")
         gmail.aplicar_label(msg_id, config.label_processado)
+
+        # Email pro DP (não pro cliente) com resumo das criações
         if config.email_dp:
-            assunto, corpo_email = email_sucesso(candidato_id, payload, razao)
-            gmail.enviar_email(config.email_dp, assunto, corpo_email)
-        salvar_payload(
-            msg_id, metadados, payload, resolucao=resolucao,
-            resultado={"status": "sucesso", "candidato_id": candidato_id, "erro": None},
-        )
-        log_jsonl({
-            "msg_id": msg_id, "status": "sucesso",
-            "candidato_id": candidato_id, "empresa_id": empresa_id,
-            "departamento_id": depto_id, "funcao_id": funcao_id,
-            "payload_path": str(arq_payload.name),
-        })
-    else:
-        log.error(f"   ❌ POST falhou: {ref}\n{body_err}")
-        gmail.aplicar_label(msg_id, config.label_pendente)
-        if config.email_dp:
-            assunto, corpo_email = email_pendencia(
-                f"{ref} — {body_err[:200]}",
-                {"payload": payload, "empresa": razao},
+            try:
+                assunto, corpo = _corpo_email_sucesso_lote(resultados)
+                gmail.enviar_email(config.email_dp, assunto, corpo)
+            except Exception:
+                log.exception("Falha enviando email de sucesso pro DP")
+
+        for r in resultados:
+            log_jsonl({
+                "msg_id": msg_id, "status": "sucesso",
+                "indice": r.get("indice"), "nome": r.get("nome"),
+                "candidato_id": r.get("candidato_id"),
+                "empresa_id": r.get("empresa_id"),
+                "departamento_id": r.get("departamento_id"),
+                "funcao_id": r.get("funcao_id"),
+                "payload_path": r.get("payload_path"),
+            })
+        return
+
+    # Tem pelo menos UMA falha — label pendente + reply consolidado no thread
+    gmail.aplicar_label(msg_id, config.label_pendente)
+
+    reply_enviado = False
+    envio_pulado = False
+    if msg_pra_resposta:
+        try:
+            corpo = _corpo_reply_lote(resultados)
+            if config.confirmar_replies and not _confirmar_envio(
+                msg_pra_resposta, corpo, config.email_dp or None
+            ):
+                log.warning("   ✋ Envio cancelado pelo usuário (--ask)")
+                envio_pulado = True
+            else:
+                gmail.responder_no_thread(
+                    msg_pra_resposta, corpo=corpo, cc=config.email_dp or None
+                )
+                reply_enviado = True
+                log.info(
+                    f"   📨 Reply consolidado enviado "
+                    f"({n_ok} OK + {n_total - n_ok} pendente(s))"
+                )
+        except Exception:
+            log.exception("Falha enviando reply consolidado")
+
+    if not reply_enviado and not envio_pulado and config.email_dp:
+        try:
+            motivos = "; ".join(
+                f"{r['nome']}: {r.get('motivo_cliente') or r.get('erro_tecnico', '?')}"
+                for r in resultados if not r["ok"]
             )
-            gmail.enviar_email(config.email_dp, assunto, corpo_email)
-        salvar_payload(
-            msg_id, metadados, payload, resolucao=resolucao,
-            resultado={"status": "falha_post", "candidato_id": None,
-                       "erro": ref, "body": body_err[:2000]},
-        )
+            assunto, corpo = email_pendencia(motivos[:200], {"resultados": resultados})
+            gmail.enviar_email(config.email_dp, assunto, corpo)
+        except Exception:
+            log.exception("Falha enviando email seco pro DP")
+
+    for r in resultados:
         log_jsonl({
-            "msg_id": msg_id, "status": "falha_post",
-            "motivo": ref, "body": body_err[:500],
-            "payload_path": str(arq_payload.name),
+            "msg_id": msg_id,
+            "status": (
+                "sucesso" if r["ok"]
+                else ("pendente_validacao" if r.get("campos_faltando") else "erro")
+            ),
+            "indice": r.get("indice"),
+            "nome": r.get("nome"),
+            "candidato_id": r.get("candidato_id"),
+            "erro": r.get("erro_tecnico"),
+            "_validacao_bloqueada": r.get("campos_faltando", []),
         })
+
+
+def _corpo_email_sucesso_lote(resultados: list[dict]) -> tuple[str, str]:
+    """Email DP quando TODOS deram certo (1 ou N)."""
+    n = len(resultados)
+    razao = next((r.get("razao_social") for r in resultados if r.get("razao_social")), "?")
+    if n == 1:
+        r = resultados[0]
+        assunto = f"[ADMISSÃO OK] {r['nome']} — candidato {r.get('candidato_id', '?')}"
+    else:
+        assunto = f"[ADMISSÃO OK] {n} candidatos criados ({razao})"
+
+    linhas = []
+    for r in resultados:
+        cid = r.get("candidato_id") or ("(dry-run)" if r.get("dry_run") else "?")
+        linhas.append(f"  • {r['nome']} → candidato {cid}")
+
+    corpo = (
+        f"Admissão criada no eContador com sucesso.\n\n"
+        f"Empresa: {razao}\n\n"
+        f"Funcionário(s) cadastrado(s):\n"
+        + "\n".join(linhas)
+        + "\n\n"
+        + "Lembrete: DP precisa preencher manualmente no Alterdata Desktop\n"
+        + "os ~14 campos que não chegam pelo sync E-plugin (Matrícula eSocial,\n"
+        + "Regime de Jornada, FGTS, etc.).\n\n"
+        + f"Pipeline Local — {datetime.now().isoformat(timespec='seconds')}"
+    )
+    return assunto, corpo
+
+
+def _corpo_reply_lote(resultados: list[dict]) -> str:
+    """Reply consolidado no thread quando há mix de sucesso/pendência (ou só pendência)."""
+    sucessos = [r for r in resultados if r["ok"]]
+    falhas = [r for r in resultados if not r["ok"]]
+
+    blocos: list[str] = []
+
+    if sucessos:
+        nomes = [r["nome"] for r in sucessos]
+        if len(nomes) == 1:
+            blocos.append(f"Já cadastrei {nomes[0]} no sistema.")
+        else:
+            blocos.append(f"Já cadastrei no sistema: {_lista_natural(nomes)}.")
+
+    for r in falhas:
+        nome = r["nome"]
+        if r.get("campos_faltando"):
+            lista = _lista_natural(r["campos_faltando"])
+            blocos.append(f"Pra {nome}, ainda preciso de: {lista}.")
+        elif r.get("motivo_cliente"):
+            blocos.append(f"Pra {nome}: {r['motivo_cliente']}")
+        else:
+            blocos.append(f"Pra {nome}: {r.get('erro_tecnico', 'não foi possível processar.')}")
+
+    miolo = "\n\n".join(blocos)
+
+    return (
+        f"Olá!\n\n"
+        f"{miolo}\n\n"
+        f"Pode me responder esse mesmo e-mail com o que falta? Não precisa "
+        f"reenviar os documentos que já mandou.\n\n"
+        f"Qualquer dúvida, é só me chamar.\n\n"
+        f"Atenciosamente,\n"
+        f"DP — Crosara Contabilidade"
+    )
 
 
 # ============================================================

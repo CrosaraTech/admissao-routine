@@ -245,6 +245,50 @@ def finalizar_payload(
     return {"data": data}
 
 
+def normalizar_admissoes(resposta_claude: dict) -> list[dict]:
+    """Normaliza a resposta do Claude pra uma lista de blocos de admissão.
+
+    Formatos aceitos:
+      A. MULTI: {"cnpj_empresa": X, "admissoes": [{...}, {...}]}
+      B. SINGLE legacy: {"cnpj_empresa": X, "data": {...}, "departamento_sugerido": Y}
+
+    Retorna sempre uma lista de blocos no formato single, com cnpj_empresa
+    propagado do raiz pra cada bloco se faltar:
+      [{"cnpj_empresa": X, "departamento_sugerido": Y, "data": {...}}, ...]
+
+    Resposta vazia/inválida → [].
+    Resposta com _pendente=true → [] (caller trata).
+    """
+    if not isinstance(resposta_claude, dict):
+        return []
+    if resposta_claude.get("_pendente"):
+        return []
+
+    cnpj_raiz = resposta_claude.get("cnpj_empresa")
+    depto_raiz = resposta_claude.get("departamento_sugerido")
+
+    admissoes = resposta_claude.get("admissoes")
+    if isinstance(admissoes, list) and admissoes:
+        out: list[dict] = []
+        for bloco in admissoes:
+            if not isinstance(bloco, dict) or "data" not in bloco:
+                continue
+            b = dict(bloco)
+            # Propaga cnpj/depto se o bloco não trouxer
+            if cnpj_raiz and not b.get("cnpj_empresa"):
+                b["cnpj_empresa"] = cnpj_raiz
+            if depto_raiz and not b.get("departamento_sugerido"):
+                b["departamento_sugerido"] = depto_raiz
+            out.append(b)
+        return out
+
+    # Single legacy
+    if "data" in resposta_claude:
+        return [resposta_claude]
+
+    return []
+
+
 def extrair_dados_consulta(payload_claude: dict) -> dict:
     """Extrai os campos top-level que o pipeline usa pra resolver IDs.
 

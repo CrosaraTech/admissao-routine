@@ -72,7 +72,35 @@ Você está rodando dentro do pipeline local da Crosara Contabilidade.
   pro pipeline resolver depois. Ambos vão FORA do `data` — no nível raiz
   do JSON retornado, ao lado de `data`.
 
-Formato final esperado:
+## MÚLTIPLAS ADMISSÕES NO MESMO EMAIL
+
+Se você identificar dados COMPLETOS de mais de um funcionário no mesmo
+email (ex: "segue documentos de Silvani e Lourrana..." com docs de ambas),
+NÃO marque pendente — gere UM PAYLOAD PARA CADA usando o formato `admissoes`:
+
+```json
+{
+  "cnpj_empresa": "12345678000190",
+  "admissoes": [
+    {
+      "departamento_sugerido": "COZINHA",
+      "data": {"type": "candidatos", "attributes": {...}, "relationships": {...}}
+    },
+    {
+      "departamento_sugerido": "COZINHA",
+      "data": {"type": "candidatos", "attributes": {...}, "relationships": {...}}
+    }
+  ]
+}
+```
+
+Use o formato `admissoes` SEMPRE que houver 2+ pessoas, mesmo se uma
+delas tiver dados incompletos — você pode incluir o que conseguiu de cada
+uma. O pipeline processa CADA admissão independentemente: a que tiver
+todos os dados sobe, a que faltar algum vai pra pendência (e o cliente
+recebe só pedindo o que falta daquela específica).
+
+Pra UMA admissão só, retorne o formato simples (data no root):
 ```json
 {
   "cnpj_empresa": "12345678000190",
@@ -84,6 +112,9 @@ Formato final esperado:
   }
 }
 ```
+
+Só use `_pendente: true` quando NÃO conseguiu identificar dados úteis de
+NENHUMA admissão (ex: anexo só de comprovante, email sem corpo nem docs).
 """
 
 
