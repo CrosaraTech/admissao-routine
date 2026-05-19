@@ -31,6 +31,37 @@ ROOT = Path(__file__).parent
 BRIEFING_FILE = ROOT / "briefing.md"
 
 
+# Preços oficiais em USD por 1 milhão de tokens (input, output).
+# Fonte: https://www.anthropic.com/pricing — atualizar quando mudar.
+PRICING_USD_POR_MTOK: dict[str, tuple[float, float]] = {
+    # Opus 4.x (premium)
+    "claude-opus-4-7":           (15.0, 75.0),
+    "claude-opus-4-6":           (15.0, 75.0),
+    "claude-opus-4-5":           (15.0, 75.0),
+    # Sonnet 4.x (mainstream)
+    "claude-sonnet-4-6":         (3.0, 15.0),
+    "claude-sonnet-4-5":         (3.0, 15.0),
+    "claude-sonnet-4-20250514":  (3.0, 15.0),  # Sonnet 4 (modelo deste pipeline)
+    # Haiku 4.5 (econômico)
+    "claude-haiku-4-5":          (1.0, 5.0),
+    "claude-haiku-4-5-20251001": (1.0, 5.0),
+}
+
+
+def _precos_do_modelo(model: str) -> tuple[float, float]:
+    """Retorna (preço_input, preço_output) em USD/MTok pro model dado.
+    Fallback: Sonnet 4 ($3/$15) se modelo não conhecido."""
+    if model in PRICING_USD_POR_MTOK:
+        return PRICING_USD_POR_MTOK[model]
+    # Tenta match por família (sonnet/opus/haiku)
+    m_lower = model.lower()
+    if "opus" in m_lower:
+        return (15.0, 75.0)
+    if "haiku" in m_lower:
+        return (1.0, 5.0)
+    return (3.0, 15.0)  # default Sonnet
+
+
 # Tipos MIME aceitos pelo bloco image/document do Anthropic
 IMAGE_MIMES = {"image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp"}
 DOC_MIMES = {"application/pdf"}
@@ -181,6 +212,14 @@ class ClaudeClient:
         # Self-consistency: chama N vezes e funde. 1 = sem verificação,
         # 2 = double-check (recomendado), 3+ = ensemble.
         self.chamadas_verificacao = max(1, int(chamadas_verificacao))
+        # Contadores cumulativos de billing (toda chamada feita pela instância)
+        self.usage_total: dict[str, int] = {
+            "n_calls": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+        }
 
     def _bloco_anexo(self, anexo: dict) -> dict | None:
         """Retorna o content-block apropriado pro Claude (image_/document_)."""
@@ -328,6 +367,9 @@ class ClaudeClient:
         )
         self._ts_ultima_chamada = time.time()
 
+        # Captura tokens + estima custo desta chamada
+        self._registrar_uso(getattr(msg, "usage", None))
+
         # Concatena texto de resposta
         resposta = "\n".join(
             b.text for b in msg.content if getattr(b, "type", None) == "text"
@@ -335,6 +377,66 @@ class ClaudeClient:
         log.debug(f"Resposta Claude (preview): {resposta[:300]}")
 
         return self._parsear_json(resposta)
+
+    def _registrar_uso(self, usage) -> None:
+        """Acumula tokens da chamada atual e loga estimativa de custo."""
+        if usage is None:
+            return
+        inp = getattr(usage, "input_tokens", 0) or 0
+        out = getattr(usage, "output_tokens", 0) or 0
+        cache_w = getattr(usage, "cache_creation_input_tokens", 0) or 0
+        cache_r = getattr(usage, "cache_read_input_tokens", 0) or 0
+
+        self.usage_total["n_calls"] += 1
+        self.usage_total["input_tokens"] += inp
+        self.usage_total["output_tokens"] += out
+        self.usage_total["cache_creation_input_tokens"] += cache_w
+        self.usage_total["cache_read_input_tokens"] += cache_r
+
+        custo = self.estimar_custo_usd(inp, out, cache_w, cache_r)
+        # Log conciso, separa cache pra dar visibilidade quando estiver ativo
+        extra = ""
+        if cache_w or cache_r:
+            extra = f" [cache: +{cache_w:,} write / +{cache_r:,} read]"
+        log.info(
+            f"   💰 {inp:,} input + {out:,} output tokens{extra} "
+            f"≈ US$ {custo:.4f}"
+        )
+
+    def estimar_custo_usd(
+        self,
+        input_tokens: int,
+        output_tokens: int,
+        cache_creation: int = 0,
+        cache_read: int = 0,
+    ) -> float:
+        """Estima custo em USD desta chamada (ou agregado, se chamado com totais).
+
+        Pricing oficial Anthropic:
+          - input regular: 1x base
+          - cache write: 1.25x base
+          - cache read: 0.1x base
+          - output: out_price
+        """
+        in_price, out_price = _precos_do_modelo(self.model)
+        in_regular = (input_tokens / 1_000_000) * in_price
+        in_cache_w = (cache_creation / 1_000_000) * in_price * 1.25
+        in_cache_r = (cache_read / 1_000_000) * in_price * 0.10
+        out_total = (output_tokens / 1_000_000) * out_price
+        return in_regular + in_cache_w + in_cache_r + out_total
+
+    def usage_resumo(self) -> dict:
+        """Retorna dict com cumulativo + estimativa de custo USD."""
+        u = self.usage_total
+        custo = self.estimar_custo_usd(
+            u["input_tokens"], u["output_tokens"],
+            u["cache_creation_input_tokens"], u["cache_read_input_tokens"],
+        )
+        return {
+            **u,
+            "model": self.model,
+            "custo_usd_estimado": round(custo, 4),
+        }
 
     # ---- Self-consistency (multi-chamada) ----------------------------
 

@@ -64,6 +64,7 @@ PLANILHA_CBO = ROOT / "funcoes_cbo.xlsx"
 LOG_FILE = ROOT / "admissao_log.ndjson"
 PAYLOADS_DIR = ROOT / "payloads"
 PLANILHA_ADMISSOES = ROOT / "admissoes.xlsx"
+BILLING_FILE = ROOT / "billing.ndjson"
 
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -1024,12 +1025,16 @@ def _corpo_reply_lote(resultados: list[dict]) -> str:
 def rodar_uma_passada(config: Config, claude: ClaudeClient, planilha: list[dict]) -> None:
     gmail = GmailClient()
     api = EContadorAPI(config.base_url, config.token)
+    # Snapshot do billing antes da passada — usado pra calcular delta no fim
+    usage_antes = dict(claude.usage_total)
+    n_emails_processados = 0
     try:
         # ---- 1. Emails NOVOS (sem label de processado/pendente) ------
         emails = gmail.buscar_emails_pendentes(
             config.label_entrada, config.label_processado, config.label_pendente
         )
         log.info(f"📥 {len(emails)} email(s) novo(s)")
+        n_emails_processados += len(emails)
 
         for msg in emails:
             _processar_seguro(
@@ -1044,6 +1049,7 @@ def rodar_uma_passada(config: Config, claude: ClaudeClient, planilha: list[dict]
         threads = gmail.buscar_threads_aguardando_cliente(config.label_pendente)
         if threads:
             log.info(f"🔁 {len(threads)} thread(s) com resposta do cliente")
+        n_emails_processados += len(threads)
         for thread in threads:
             tid = thread.get("id", "?")
             msgs = thread.get("messages", []) or []
@@ -1060,6 +1066,59 @@ def rodar_uma_passada(config: Config, claude: ClaudeClient, planilha: list[dict]
             )
     finally:
         api.close()
+        _registrar_billing_passada(claude, usage_antes, n_emails_processados)
+
+
+def _registrar_billing_passada(
+    claude: ClaudeClient,
+    usage_antes: dict,
+    n_emails_processados: int,
+) -> None:
+    """Calcula delta de billing da passada (tokens + custo) e registra em
+    billing.ndjson + log do terminal. Útil pra acompanhar custo da API
+    Claude ao longo do tempo (mensal etc.)."""
+    u_agora = claude.usage_total
+    delta = {
+        "n_calls": u_agora["n_calls"] - usage_antes.get("n_calls", 0),
+        "input_tokens": u_agora["input_tokens"] - usage_antes.get("input_tokens", 0),
+        "output_tokens": u_agora["output_tokens"] - usage_antes.get("output_tokens", 0),
+        "cache_creation_input_tokens": (
+            u_agora["cache_creation_input_tokens"]
+            - usage_antes.get("cache_creation_input_tokens", 0)
+        ),
+        "cache_read_input_tokens": (
+            u_agora["cache_read_input_tokens"]
+            - usage_antes.get("cache_read_input_tokens", 0)
+        ),
+    }
+
+    if delta["n_calls"] == 0:
+        log.info("💰 Nenhuma chamada ao Claude nessa passada — sem custo")
+        return
+
+    custo = claude.estimar_custo_usd(
+        delta["input_tokens"], delta["output_tokens"],
+        delta["cache_creation_input_tokens"], delta["cache_read_input_tokens"],
+    )
+
+    log.info(
+        f"💰 Passada: {delta['n_calls']} chamada(s) Claude, "
+        f"{delta['input_tokens']:,} input + {delta['output_tokens']:,} output tokens "
+        f"em {n_emails_processados} email(s) → US$ {custo:.4f}"
+    )
+
+    try:
+        entry = {
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "model": claude.model,
+            "n_emails_processados": n_emails_processados,
+            **delta,
+            "custo_usd": round(custo, 6),
+        }
+        with open(BILLING_FILE, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except OSError as e:
+        log.warning(f"Falha gravando billing.ndjson: {e}")
 
 
 def _processar_seguro(
