@@ -102,6 +102,32 @@ TODAS as orientações possíveis. Procure ativamente por:
 
 Se um campo está VISÍVEL na imagem, EXTRAIA mesmo que a imagem esteja
 inclinada/girada. Só marque como faltante se realmente não conseguir ler.
+
+## ANTI-ALUCINAÇÃO DE CNPJ (REGRA CRÍTICA)
+
+O `cnpj_empresa` é o CNPJ da EMPRESA CONTRATANTE. NUNCA INVENTE esse valor.
+
+⚠️ FONTES VÁLIDAS pra extrair o CNPJ contratante:
+  1. Corpo do email (texto) — ex: "CNPJ XX.XXX.XXX/0001-XX"
+  2. Assinatura do email (rodapé do remetente)
+  3. ASO (Atestado de Saúde Ocupacional): cabeçalho tem
+     "EMPRESA: XX.XXX.XXX/0001-XX - NOME DA EMPRESA"
+  4. Ficha de admissão / Proposta: cabeçalho ou rodapé
+  5. CTPS: campo "ÚLTIMO EMPREGADOR" não conta — é histórico
+  6. Holerite anterior: pode aparecer, mas confira se é o atual empregador
+
+❌ FONTES INVÁLIDAS (NÃO usar como CNPJ do empregador):
+  - Conta de luz/água/internet: o CNPJ ali é da DISTRIBUIDORA
+    (Equatorial, Saneago, Vivo, etc.), NÃO do empregador
+  - Carteira de habilitação (CNH): não tem CNPJ
+  - Comprovante de residência em geral: CNPJ ali é do provedor do serviço
+
+REGRA: se você NÃO ENCONTRAR um CNPJ explícito de empregador nos
+documentos ou no texto do email, RETORNE _pendente=true com motivo
+"CNPJ da empresa contratante não localizado nos documentos". NÃO INVENTE
+um CNPJ baseado em "parece que essa empresa..." — é melhor pendente
+do que CNPJ errado.
+
 - Os IDs de `empresa`, `departamento` e `funcao` serão substituídos pelo
   pipeline depois — use placeholders "1" nesses 3 relationships.
 - Se faltarem dados essenciais (lista da seção 10 do briefing), OU se o
