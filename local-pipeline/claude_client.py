@@ -248,40 +248,78 @@ class ClaudeClient:
         anexos: list[dict],
         funcoes_candidatas: list[dict] | None = None,
     ) -> dict:
-        """Wrapper público: chama o Claude N vezes (self-consistency) se
-        `chamadas_verificacao > 1`, e funde as respostas pegando a mais
-        completa. Loga divergências em campos críticos pra auditoria.
+        """Wrapper público: faz 1 chamada ao Claude. Se a resposta tiver
+        indícios de inconsistência (campos chave faltando, _pendente=true),
+        dispara chamadas extra de verificação até `chamadas_verificacao`.
+        Funde respostas pegando a mais completa.
+
+        Otimização vs. self-consistency cego (sempre 2 chamadas): quando a
+        1ª resposta já tá completa (caso comum), NÃO paga a 2ª. Custo médio
+        cai bastante mantendo a robustez nos casos suspeitos.
         """
-        if self.chamadas_verificacao == 1:
-            return self._gerar_payload_unico(
-                corpo_email, metadados, anexos, funcoes_candidatas
-            )
+        primeira = self._gerar_payload_unico(
+            corpo_email, metadados, anexos, funcoes_candidatas
+        )
+
+        if self.chamadas_verificacao <= 1 or not self._precisa_verificacao(primeira):
+            return primeira
 
         log.info(
-            f"🔁 Modo verificação ativo — {self.chamadas_verificacao} chamadas independentes ao Claude"
+            f"   🔁 Inconsistência na 1ª resposta — disparando até "
+            f"{self.chamadas_verificacao - 1} chamada(s) de verificação"
         )
-        respostas: list[dict] = []
-        for i in range(self.chamadas_verificacao):
-            log.info(f"   Chamada {i+1}/{self.chamadas_verificacao}")
+        respostas: list[dict] = [primeira]
+        for i in range(1, self.chamadas_verificacao):
             try:
                 r = self._gerar_payload_unico(
                     corpo_email, metadados, anexos, funcoes_candidatas
                 )
                 respostas.append(r)
+                # Se a nova resposta JÁ parece consistente, pode parar antes
+                if not self._precisa_verificacao(r):
+                    log.info(f"   ✅ Verificação {i+1} retornou resposta consistente — parando")
+                    break
             except Exception:
-                log.exception(f"   Chamada {i+1} falhou — continuando com as restantes")
-
-        if not respostas:
-            raise RuntimeError("Todas as chamadas ao Claude falharam")
+                log.exception(f"   Chamada de verificação {i+1} falhou")
 
         if len(respostas) == 1:
-            log.warning(
-                f"   Só 1 chamada de {self.chamadas_verificacao} teve sucesso — "
-                f"sem comparação de verificação"
-            )
+            log.warning("   Verificação falhou — usando 1ª resposta sem comparação")
             return respostas[0]
 
         return self._mesclar_respostas(respostas)
+
+    @classmethod
+    def _precisa_verificacao(cls, resp: dict) -> bool:
+        """Heurística: a resposta parece suspeita o suficiente pra justificar
+        uma 2ª chamada de verificação?
+
+        Triggers:
+          - _pendente=true (Claude desistiu — vamos tentar de novo)
+          - Sem blocos de admissão (resposta vazia/malformada)
+          - Algum bloco com 3+ campos chave faltando (nome/cpf/nascimento/
+            identidade/admissao/salario) — Claude pode ter perdido coisas
+            que estavam visíveis
+        """
+        if resp.get("_pendente"):
+            log.info("   📍 _pendente=true → vamos verificar")
+            return True
+
+        blocos = resp.get("admissoes") or ([resp] if "data" in resp else [])
+        if not blocos:
+            log.info("   📍 resposta sem blocos → vamos verificar")
+            return True
+
+        CAMPOS_CHAVE = ["nome", "cpf", "nascimento", "identidade", "admissao", "salario"]
+        for i, b in enumerate(blocos, 1):
+            attrs = (b.get("data") or {}).get("attributes") or {}
+            ausentes = [k for k in CAMPOS_CHAVE if not attrs.get(k)]
+            if len(ausentes) >= 3:
+                log.info(
+                    f"   📍 bloco {i}/{len(blocos)} com {len(ausentes)}/6 campos chave "
+                    f"faltando ({', '.join(ausentes)}) → vamos verificar"
+                )
+                return True
+        return False
 
     def _gerar_payload_unico(
         self,

@@ -1,0 +1,54 @@
+{
+  "_documentacao": {
+    "descricao": "Regras e exceções customizáveis pelo escritório.",
+    "como_editar": "Edite este arquivo no VSCode ou Bloco de Notas. Cada seção é opcional — pode deixar vazia (objeto {} ou null). Salve garantindo que o JSON está válido (chaves fechadas, vírgulas corretas, aspas duplas).",
+    "validador_online": "https://jsonlint.com",
+    "convencoes": [
+      "Chaves que começam com '_' são DOCUMENTAÇÃO — o pipeline ignora.",
+      "Pra ativar um exemplo, copie a chave SEM o '_' inicial e preencha o valor."
+    ]
+  },
+
+  "cargos_forcados": {
+    "_doc": "Map de cargo extraído → funcao_id forçado. Quando o Claude extrair um cargo cujo nome bate (case-insensitive) com uma chave aqui, o pipeline usa o funcao_id correspondente direto — ignora a planilha CBO e a coluna X. Útil pra cargos com variantes ambíguas que SEMPRE devem ir pra mesma função.",
+    "_como_usar": "A chave é o nome do cargo (UPPERCASE). O valor é o funcao_id (string).",
+    "_exemplo_AJUDANTE_GERAL": "1234",
+    "_exemplo_MOTORISTA_CAMINHAO": "5678"
+  },
+
+  "cnpjs_excecoes": {
+    "_doc": "Exceções específicas por CNPJ (apenas dígitos, 14 chars). Aplicáveis a empresas com defaults diferentes do padrão (rural, prazo determinado, etc.).",
+    "_como_usar": "Chave = CNPJ. Valor = objeto com os campos a sobrescrever.",
+    "_exemplo_empresa_rural": {
+      "_doc_da_chave": "12345678000190",
+      "tipovinculotrabalhista_id": "25",
+      "comentario": "Empresa rural — Trab. Rural PF (25) em vez do urbano (60)"
+    }
+  },
+
+  "regras_admissao": {
+    "_doc": "Regras gerais aplicadas a TODA admissão. Sobrescreve defaults do briefing.",
+
+    "permitir_admissao_no_passado": false,
+    "_doc_permitir_admissao_no_passado": "Se false (padrão), admissão < hoje vira pendência cliente. Se true, aceita admissão retroativa (não recomendado pelas regras CLT).",
+
+    "max_dias_admissao_apos_aso": null,
+    "_doc_max_dias_admissao_apos_aso": "Se setar um número (ex: 90), o pipeline gera pendência quando ASO + N dias < admissão (ASO muito antigo). null = sem limite.",
+
+    "diascontratoexperiencia_padrao": 30,
+    "_doc_diascontratoexperiencia_padrao": "Default usado quando cliente não informa dias de experiência."
+  },
+
+  "departamentos_extras": {
+    "_doc": "Sobrescreve/complementa o departamentos.json. Use isso pra exceções que não cabem na regra geral (CNPJ-específico, departamento default, etc.).",
+    "_modo": "Mesmo formato do departamentos.json (cnpj → modo + departamentos[])."
+  },
+
+  "observacoes_internas": {
+    "_doc": "Anotações livres do escritório — não afetam o pipeline, só ficam aqui pra referência.",
+    "_exemplo": [
+      "MODELOFARMA usa Horário 1179 — DP já sabe.",
+      "Cliente X só manda admissão na 2ª segunda do mês."
+    ]
+  }
+}

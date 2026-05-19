@@ -65,6 +65,7 @@ LOG_FILE = ROOT / "admissao_log.ndjson"
 PAYLOADS_DIR = ROOT / "payloads"
 PLANILHA_ADMISSOES = ROOT / "admissoes.xlsx"
 BILLING_FILE = ROOT / "billing.ndjson"
+REGRAS_FILE = ROOT / "regras.json"
 
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -144,6 +145,37 @@ def bootstrap_arquivos_locais() -> None:
             log.info(f"📋 Bootstrapped {destino.name} a partir de {origem}")
         else:
             log.warning(f"⚠ {origem} não existe — pulando bootstrap de {destino.name}")
+
+
+def carregar_regras() -> dict:
+    """Carrega regras.json (exceções customizáveis pelo escritório).
+
+    Arquivo é opcional. Chaves que começam com '_' são tratadas como
+    documentação/exemplos e filtradas recursivamente — o escritório pode
+    deixar exemplos como referência sem afetar o comportamento.
+
+    Retorna {} se o arquivo não existir ou for JSON inválido.
+    """
+    if not REGRAS_FILE.exists():
+        log.info("ℹ regras.json não encontrado — usando defaults")
+        return {}
+    try:
+        raw = json.loads(REGRAS_FILE.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        log.error(f"regras.json inválido: {e} — ignorando, usando defaults")
+        return {}
+
+    def _filtrar_docs(obj):
+        if isinstance(obj, dict):
+            return {k: _filtrar_docs(v) for k, v in obj.items() if not k.startswith("_")}
+        if isinstance(obj, list):
+            return [_filtrar_docs(x) for x in obj]
+        return obj
+
+    regras = _filtrar_docs(raw)
+    n_secoes = sum(1 for v in regras.values() if v)
+    log.info(f"📋 regras.json carregado: {n_secoes} seção(ões) ativa(s)")
+    return regras
 
 
 def log_jsonl(entry: dict) -> None:
@@ -1269,6 +1301,12 @@ def main() -> int:
     # ─── fim TEMP-CONFIRMAR-REPLIES ──────────────────────────────────
 
     bootstrap_arquivos_locais()
+
+    # Regras customizáveis pelo escritório (exceções, defaults, observações).
+    # Arquivo opcional — pipeline funciona normal mesmo se vazio/inexistente.
+    # Conforme o escritório for definindo regras concretas, vão sendo aplicadas
+    # nos pontos apropriados do pipeline (cargos_forcados, cnpjs_excecoes, etc.).
+    _regras = carregar_regras()  # noqa: F841 — wiring concreto vem em commits futuros
 
     try:
         planilha = carregar_planilha(PLANILHA_CBO)
