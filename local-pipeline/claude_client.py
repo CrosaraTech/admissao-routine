@@ -156,7 +156,20 @@ class ClaudeClient:
     # processados em sequência (cada email pode disparar 1-2 calls).
     INTERVALO_MIN_ENTRE_CHAMADAS = 3.0
 
-    def __init__(self, model: str = "claude-sonnet-4-20250514", max_tokens: int = 8192):
+    # Campos críticos pra detectar divergência entre chamadas de verificação.
+    # Se 2 chamadas extraem valores DIFERENTES nesses campos (ex: CPFs diferentes),
+    # é red flag — Claude está alucinando em um dos casos.
+    CAMPOS_CRITICOS_VERIFICACAO = [
+        "cpf", "nome", "nascimento", "identidade",
+        "admissao", "dataidentidade", "ctps",
+    ]
+
+    def __init__(
+        self,
+        model: str = "claude-sonnet-4-20250514",
+        max_tokens: int = 8192,
+        chamadas_verificacao: int = 1,
+    ):
         api_key = os.getenv("ANTHROPIC_API_KEY")
         if not api_key:
             raise RuntimeError("ANTHROPIC_API_KEY não encontrada no ambiente")
@@ -165,6 +178,9 @@ class ClaudeClient:
         self.max_tokens = max_tokens
         self.system_prompt = carregar_briefing()
         self._ts_ultima_chamada: float = 0.0
+        # Self-consistency: chama N vezes e funde. 1 = sem verificação,
+        # 2 = double-check (recomendado), 3+ = ensemble.
+        self.chamadas_verificacao = max(1, int(chamadas_verificacao))
 
     def _bloco_anexo(self, anexo: dict) -> dict | None:
         """Retorna o content-block apropriado pro Claude (image_/document_)."""
@@ -193,7 +209,49 @@ class ClaudeClient:
         anexos: list[dict],
         funcoes_candidatas: list[dict] | None = None,
     ) -> dict:
-        """Envia tudo pro Claude e retorna o dict parseado do JSON.
+        """Wrapper público: chama o Claude N vezes (self-consistency) se
+        `chamadas_verificacao > 1`, e funde as respostas pegando a mais
+        completa. Loga divergências em campos críticos pra auditoria.
+        """
+        if self.chamadas_verificacao == 1:
+            return self._gerar_payload_unico(
+                corpo_email, metadados, anexos, funcoes_candidatas
+            )
+
+        log.info(
+            f"🔁 Modo verificação ativo — {self.chamadas_verificacao} chamadas independentes ao Claude"
+        )
+        respostas: list[dict] = []
+        for i in range(self.chamadas_verificacao):
+            log.info(f"   Chamada {i+1}/{self.chamadas_verificacao}")
+            try:
+                r = self._gerar_payload_unico(
+                    corpo_email, metadados, anexos, funcoes_candidatas
+                )
+                respostas.append(r)
+            except Exception:
+                log.exception(f"   Chamada {i+1} falhou — continuando com as restantes")
+
+        if not respostas:
+            raise RuntimeError("Todas as chamadas ao Claude falharam")
+
+        if len(respostas) == 1:
+            log.warning(
+                f"   Só 1 chamada de {self.chamadas_verificacao} teve sucesso — "
+                f"sem comparação de verificação"
+            )
+            return respostas[0]
+
+        return self._mesclar_respostas(respostas)
+
+    def _gerar_payload_unico(
+        self,
+        corpo_email: str,
+        metadados: dict,
+        anexos: list[dict],
+        funcoes_candidatas: list[dict] | None = None,
+    ) -> dict:
+        """Uma única chamada ao Claude. Retorna o dict parseado do JSON.
 
         funcoes_candidatas: lista de {nome, cbo, funcao_id} pra desambiguar
         cargo quando a planilha CBO tem múltiplos matches.
@@ -277,6 +335,125 @@ class ClaudeClient:
         log.debug(f"Resposta Claude (preview): {resposta[:300]}")
 
         return self._parsear_json(resposta)
+
+    # ---- Self-consistency (multi-chamada) ----------------------------
+
+    @staticmethod
+    def _contar_preenchidos(resp: dict) -> int:
+        """Conta valores não-vazios em campos relevantes da resposta.
+        Usado pra ranquear respostas: mais campos preenchidos → mais completa.
+        """
+        if not isinstance(resp, dict):
+            return 0
+        n = 0
+        # Caminho _pendente: conta o que foi pra _dados_parciais
+        if resp.get("_pendente"):
+            for v in (resp.get("_dados_parciais") or {}).values():
+                if v not in (None, "", 0, [], {}):
+                    n += 1
+            return n
+        # cnpj_empresa raiz vale 1
+        if resp.get("cnpj_empresa"):
+            n += 1
+        # Multi-admissão
+        blocos = resp.get("admissoes")
+        if isinstance(blocos, list) and blocos:
+            for b in blocos:
+                if isinstance(b, dict):
+                    n += ClaudeClient._contar_campos_bloco(b)
+            return n
+        # Single legacy
+        if "data" in resp:
+            n += ClaudeClient._contar_campos_bloco(resp)
+        return n
+
+    @staticmethod
+    def _contar_campos_bloco(bloco: dict) -> int:
+        """Conta attributes não-vazios + relationships com .data.id."""
+        n = 0
+        data = bloco.get("data") or {}
+        attrs = data.get("attributes") or {}
+        for v in attrs.values():
+            if v not in (None, "", 0, [], {}):
+                n += 1
+        rels = data.get("relationships") or {}
+        for v in rels.values():
+            if isinstance(v, dict) and (v.get("data") or {}).get("id"):
+                n += 1
+        return n
+
+    @classmethod
+    def _mesclar_respostas(cls, respostas: list[dict]) -> dict:
+        """Funde N respostas em uma. Estratégia:
+
+        1. Se há respostas NÃO-pendentes, descarta as `_pendente: true`
+           (Claude que conseguiu processar é melhor que o que desistiu).
+        2. Entre as candidatas, pega a com MAIS campos preenchidos.
+        3. Loga divergências em campos críticos pra auditoria/debug.
+
+        Não tenta fundir per-field — risco alto de misturar CPF de uma
+        com nome de outra, criando dados inconsistentes. Melhor confiar
+        em uma resposta inteira que é internamente coerente.
+        """
+        if not respostas:
+            return {}
+        if len(respostas) == 1:
+            return respostas[0]
+
+        nao_pendentes = [r for r in respostas if not r.get("_pendente")]
+        candidatas = nao_pendentes or respostas
+
+        candidatas_ord = sorted(candidatas, key=cls._contar_preenchidos, reverse=True)
+        base = candidatas_ord[0]
+        contagens = [cls._contar_preenchidos(r) for r in respostas]
+        log.info(
+            f"   Mesclando {len(respostas)} respostas — campos preenchidos: "
+            f"{contagens} → escolhida a com {max(contagens)} campos"
+        )
+
+        # Comparação em campos críticos pra auditoria
+        cls._log_divergencias(respostas)
+        return base
+
+    @classmethod
+    def _log_divergencias(cls, respostas: list[dict]) -> None:
+        """Compara campos críticos entre as respostas. Loga warning quando
+        ≥2 respostas têm valores DIFERENTES (não vazios) no mesmo campo —
+        indica que Claude alucinou em pelo menos uma das chamadas.
+        """
+        valores_por_campo: dict[str, set] = {k: set() for k in cls.CAMPOS_CRITICOS_VERIFICACAO}
+
+        def coletar_de_bloco(bloco: dict) -> None:
+            attrs = (bloco.get("data") or {}).get("attributes") or {}
+            for k in cls.CAMPOS_CRITICOS_VERIFICACAO:
+                v = attrs.get(k)
+                if v not in (None, "", 0):
+                    valores_por_campo[k].add(str(v).strip().upper())
+
+        for r in respostas:
+            if r.get("_pendente"):
+                dp = r.get("_dados_parciais") or {}
+                for k in cls.CAMPOS_CRITICOS_VERIFICACAO:
+                    v = dp.get(k)
+                    if v not in (None, "", 0):
+                        valores_por_campo[k].add(str(v).strip().upper())
+                continue
+            blocos = r.get("admissoes") or []
+            if blocos:
+                for b in blocos:
+                    if isinstance(b, dict):
+                        coletar_de_bloco(b)
+            elif "data" in r:
+                coletar_de_bloco(r)
+
+        divergentes = {k: v for k, v in valores_por_campo.items() if len(v) > 1}
+        if divergentes:
+            for campo, valores in divergentes.items():
+                log.warning(
+                    f"   ⚠ DIVERGÊNCIA em '{campo}' entre as chamadas: "
+                    f"{sorted(valores)} — Claude pode ter alucinado em uma. "
+                    f"Verifique o payload final."
+                )
 
     @staticmethod
     def _parsear_json(resposta: str) -> dict:

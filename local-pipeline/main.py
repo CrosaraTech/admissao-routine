@@ -89,6 +89,11 @@ class Config:
     dry_run: bool
     claude_model: str
     claude_max_tokens: int
+    # Self-consistency: nº de chamadas independentes ao Claude por extração.
+    # 1 = sem verificação (mais barato), 2 = double-check (recomendado),
+    # 3+ = ensemble. Múltiplas chamadas mitigam casos em que o Claude
+    # eventualmente perde campos visíveis (ex: RG em foto rotacionada).
+    claude_chamadas_verificacao: int
     # ─── TEMP-CONFIRMAR-REPLIES (REMOVER em produção) ───────────
     # Default LIGADO durante calibração: pergunta confirmação antes
     # de enviar cada email de pendência. Auto-desligado quando o
@@ -119,6 +124,7 @@ def carregar_config() -> Config:
         dry_run=bool(raw.get("dry_run", False)),
         claude_model=anthropic_cfg.get("model", "claude-sonnet-4-20250514"),
         claude_max_tokens=int(anthropic_cfg.get("max_tokens", 8192)),
+        claude_chamadas_verificacao=int(anthropic_cfg.get("chamadas_verificacao", 2)),
     )
 
 
@@ -1213,7 +1219,11 @@ def main() -> int:
         return 1
 
     try:
-        claude = ClaudeClient(model=config.claude_model, max_tokens=config.claude_max_tokens)
+        claude = ClaudeClient(
+            model=config.claude_model,
+            max_tokens=config.claude_max_tokens,
+            chamadas_verificacao=config.claude_chamadas_verificacao,
+        )
     except Exception as e:
         log.error(f"Falha inicializando Claude: {e}")
         return 2

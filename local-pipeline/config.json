@@ -13,7 +13,8 @@
   },
   "anthropic": {
     "model": "claude-sonnet-4-20250514",
-    "max_tokens": 8192
+    "max_tokens": 8192,
+    "chamadas_verificacao": 2
   },
   "polling_intervalo_segundos": 300,
   "dry_run": false
