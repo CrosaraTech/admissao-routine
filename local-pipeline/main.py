@@ -556,6 +556,30 @@ def processar_admissao(
     )
 
 
+def _resultado_pendencia_interna(
+    *, indice: int, nome: str, razao: str | None,
+    erro: str, diagnostico_dp: str, bloco: dict,
+) -> dict:
+    """Resultado pra pendência cujo problema é INTERNO (cargo/CBO/cadastro
+    do escritório). NÃO comunica nada ao cliente — só ao DP via email seco.
+    `interno: True` faz `_finalizar_lote` rotear pra esse caminho.
+    """
+    log.warning(f"      🔧 [{indice}] {nome}: pendência interna — {erro}")
+    return {
+        "indice": indice,
+        "nome": nome,
+        "ok": False,
+        "interno": True,
+        "candidato_id": None,
+        "erro_tecnico": erro,
+        "diagnostico_dp": diagnostico_dp,
+        "motivo_cliente": None,
+        "campos_faltando": [],
+        "payload_parcial": bloco,
+        "razao_social": razao,
+    }
+
+
 def _processar_um_bloco(
     *, bloco: dict, indice: int, total: int,
     msg_id: str, metadados: dict,
@@ -616,14 +640,14 @@ def _processar_um_bloco(
     else:
         log.info(f"      🗂 Depto: {depto_id}")
 
-    # Função
+    # Função — pendências aqui são INTERNAS (problema do nosso cadastro/planilha,
+    # não do cliente). Não escala pro cliente; vira email seco pro DP.
     funcao_id, conf, ambiguos, fmsg = resolver_funcao(
         planilha_cbo, dados["cargo"], dados["cbo"]
     )
     if funcao_id is None and ambiguos:
         log.info(f"      💼 Ambíguo ({len(ambiguos)}) — re-prompt Claude")
         resposta2 = claude.gerar_payload(corpo, metadados, anexos, funcoes_candidatas=ambiguos)
-        # Localiza o bloco correspondente na resposta2 por nome/CPF
         blocos2 = normalizar_admissoes(resposta2)
         bloco2 = _localizar_bloco_correspondente(blocos2, attrs)
         if bloco2:
@@ -634,32 +658,42 @@ def _processar_um_bloco(
             if funcao_id2:
                 funcao_id, conf, bloco = funcao_id2, conf2, bloco2
             else:
-                _raise_pendencia(
-                    f"Função ainda ambígua para {nome}: {fmsg2}",
-                    motivo_cliente=(
-                        f"O cargo de {nome} ({dados.get('cargo')}) tem variantes "
-                        f"parecidas no nosso cadastro. Pode informar o nome EXATO "
-                        f"do cargo (e o código CBO, se tiver)?"
+                return _resultado_pendencia_interna(
+                    indice=indice, nome=nome, razao=razao,
+                    erro=f"Função ambígua após re-prompt: {fmsg2}",
+                    diagnostico_dp=(
+                        f"Cargo extraído (Claude tentou 2x): "
+                        f"'{dados.get('cargo')}' / CBO '{dados.get('cbo') or '?'}'. "
+                        f"Candidatos da planilha (top {min(len(ambiguos), 10)}): "
+                        + "; ".join(
+                            f"{f['nome_cargo']} (id={f['funcao_id']}, cbo={f.get('cbo') or '?'})"
+                            for f in ambiguos[:10]
+                        )
                     ),
-                    payload_parcial=bloco,
+                    bloco=bloco,
                 )
         else:
-            _raise_pendencia(
-                f"Re-prompt sem bloco correspondente pra {nome}",
-                motivo_cliente=(
-                    f"O cargo de {nome} ({dados.get('cargo')}) ficou ambíguo. "
-                    f"Pode informar o nome EXATO do cargo (e o CBO, se tiver)?"
+            return _resultado_pendencia_interna(
+                indice=indice, nome=nome, razao=razao,
+                erro="Re-prompt do Claude não retornou bloco correspondente",
+                diagnostico_dp=(
+                    f"Cargo extraído: '{dados.get('cargo')}'. "
+                    f"Claude não conseguiu se localizar entre as opções."
                 ),
-                payload_parcial=bloco,
+                bloco=bloco,
             )
     elif funcao_id is None:
-        _raise_pendencia(
-            f"Função: {fmsg}",
-            motivo_cliente=(
-                f"O cargo de {nome} ({dados.get('cargo')}) não está cadastrado "
-                f"no nosso sistema. Pode informar um cargo equivalente, ou o CBO?"
+        return _resultado_pendencia_interna(
+            indice=indice, nome=nome, razao=razao,
+            erro=f"Função não encontrada: {fmsg}",
+            diagnostico_dp=(
+                f"Cargo extraído: '{dados.get('cargo')}' / "
+                f"CBO '{dados.get('cbo') or '?'}'. "
+                f"Mensagem do resolver: {fmsg}. "
+                f"Considerar: cadastrar a função no eContador, ou marcar X "
+                f"em um cargo equivalente da planilha funcoes_cbo.xlsx."
             ),
-            payload_parcial=bloco,
+            bloco=bloco,
         )
     log.info(f"      💼 Função: {funcao_id} ({conf:.0%})")
 
@@ -812,39 +846,48 @@ def _finalizar_lote(
             })
         return
 
-    # Tem pelo menos UMA falha — label pendente + reply consolidado no thread
+    # Tem pelo menos UMA falha — label pendente
     gmail.aplicar_label(msg_id, config.label_pendente)
 
-    reply_enviado = False
-    envio_pulado = False
-    if msg_pra_resposta:
+    sucessos = [r for r in resultados if r["ok"]]
+    falhas_internas = [r for r in resultados if not r["ok"] and r.get("interno")]
+    falhas_cliente = [r for r in resultados if not r["ok"] and not r.get("interno")]
+    log.info(
+        f"   📊 Detalhe: {len(sucessos)} OK | "
+        f"{len(falhas_cliente)} pendente cliente | "
+        f"{len(falhas_internas)} pendente interna (DP)"
+    )
+
+    # 1. Reply no thread — só se há algo a comunicar ao cliente.
+    #    Inclui sucessos (pra ele saber que parte foi cadastrada),
+    #    falhas_cliente (pedindo o que falta), e menciona suavemente
+    #    pendências internas como "estou organizando aqui do nosso lado"
+    #    (sem expor termos técnicos como CBO).
+    if msg_pra_resposta and (sucessos or falhas_cliente or falhas_internas):
         try:
             corpo = _corpo_reply_lote(resultados)
             if config.confirmar_replies and not _confirmar_envio(
                 msg_pra_resposta, corpo, config.email_dp or None
             ):
                 log.warning("   ✋ Envio cancelado pelo usuário (--ask)")
-                envio_pulado = True
             else:
                 gmail.responder_no_thread(
                     msg_pra_resposta, corpo=corpo, cc=config.email_dp or None
                 )
-                reply_enviado = True
                 log.info(
                     f"   📨 Reply consolidado enviado "
-                    f"({n_ok} OK + {n_total - n_ok} pendente(s))"
+                    f"({len(sucessos)} OK + {len(falhas_cliente)} cliente "
+                    f"+ {len(falhas_internas)} interna)"
                 )
         except Exception:
             log.exception("Falha enviando reply consolidado")
 
-    if not reply_enviado and not envio_pulado and config.email_dp:
+    # 2. Email seco pro DP — só se há pendências internas (técnicas)
+    if falhas_internas and config.email_dp:
         try:
-            motivos = "; ".join(
-                f"{r['nome']}: {r.get('motivo_cliente') or r.get('erro_tecnico', '?')}"
-                for r in resultados if not r["ok"]
-            )
-            assunto, corpo = email_pendencia(motivos[:200], {"resultados": resultados})
+            assunto, corpo = _corpo_email_pendencia_interna(falhas_internas, sucessos)
             gmail.enviar_email(config.email_dp, assunto, corpo)
+            log.info(f"   📧 Email DP enviado ({len(falhas_internas)} pendência(s) interna(s))")
         except Exception:
             log.exception("Falha enviando email seco pro DP")
 
@@ -853,7 +896,10 @@ def _finalizar_lote(
             "msg_id": msg_id,
             "status": (
                 "sucesso" if r["ok"]
-                else ("pendente_validacao" if r.get("campos_faltando") else "erro")
+                else (
+                    "pendente_interno" if r.get("interno")
+                    else ("pendente_validacao" if r.get("campos_faltando") else "erro")
+                )
             ),
             "indice": r.get("indice"),
             "nome": r.get("nome"),
@@ -893,9 +939,19 @@ def _corpo_email_sucesso_lote(resultados: list[dict]) -> tuple[str, str]:
 
 
 def _corpo_reply_lote(resultados: list[dict]) -> str:
-    """Reply consolidado no thread quando há mix de sucesso/pendência (ou só pendência)."""
+    """Reply consolidado no thread.
+
+    3 categorias de funcionário no mesmo email:
+      - sucessos: "Já cadastrei X."
+      - falhas_cliente (problema do cliente, ex: faltou ASO): "Pra Y, ainda
+        preciso de Z."
+      - falhas_internas (problema nosso, ex: cargo não cadastrado): "Pra W,
+        estou organizando alguns detalhes do nosso lado; te aviso assim
+        que estiver pronto." (sem termo técnico — transparente pro cliente)
+    """
     sucessos = [r for r in resultados if r["ok"]]
-    falhas = [r for r in resultados if not r["ok"]]
+    falhas_cliente = [r for r in resultados if not r["ok"] and not r.get("interno")]
+    falhas_internas = [r for r in resultados if not r["ok"] and r.get("interno")]
 
     blocos: list[str] = []
 
@@ -906,7 +962,7 @@ def _corpo_reply_lote(resultados: list[dict]) -> str:
         else:
             blocos.append(f"Já cadastrei no sistema: {_lista_natural(nomes)}.")
 
-    for r in falhas:
+    for r in falhas_cliente:
         nome = r["nome"]
         if r.get("campos_faltando"):
             lista = _lista_natural(r["campos_faltando"])
@@ -916,17 +972,82 @@ def _corpo_reply_lote(resultados: list[dict]) -> str:
         else:
             blocos.append(f"Pra {nome}: {r.get('erro_tecnico', 'não foi possível processar.')}")
 
+    if falhas_internas:
+        nomes = [r["nome"] for r in falhas_internas]
+        nomes_str = _lista_natural(nomes)
+        if len(nomes) == 1:
+            blocos.append(
+                f"Pra {nomes_str}, estou organizando alguns detalhes "
+                f"aqui do nosso lado — te aviso assim que estiver pronto."
+            )
+        else:
+            blocos.append(
+                f"Pra {nomes_str}, estou organizando alguns detalhes "
+                f"aqui do nosso lado — te aviso assim que estiverem prontos."
+            )
+
     miolo = "\n\n".join(blocos)
+
+    pedido_resposta = (
+        "Pode me responder esse mesmo e-mail com o que falta? Não precisa "
+        "reenviar os documentos que já mandou.\n\n"
+        if falhas_cliente else ""
+    )
 
     return (
         f"Olá!\n\n"
         f"{miolo}\n\n"
-        f"Pode me responder esse mesmo e-mail com o que falta? Não precisa "
-        f"reenviar os documentos que já mandou.\n\n"
+        f"{pedido_resposta}"
         f"Qualquer dúvida, é só me chamar.\n\n"
         f"Atenciosamente,\n"
         f"DP — Crosara Contabilidade"
     )
+
+
+def _corpo_email_pendencia_interna(
+    internas: list[dict],
+    sucessos: list[dict],
+) -> tuple[str, str]:
+    """Email seco pro DP com detalhes técnicos das pendências internas.
+
+    Inclui contexto dos sucessos do mesmo email pra DP saber o que já foi
+    processado e quais ainda precisam de intervenção manual.
+    """
+    n = len(internas)
+    nomes = [r["nome"] for r in internas]
+    nomes_str = ", ".join(nomes[:3]) + ("..." if len(nomes) > 3 else "")
+    assunto = f"[ADMISSÃO — Resolver internamente] {n} candidato(s): {nomes_str}"
+
+    blocos = []
+    for r in internas:
+        blocos.append(
+            f"=== {r['nome']} ===\n"
+            f"Erro: {r.get('erro_tecnico', '?')}\n"
+            f"Diagnóstico: {r.get('diagnostico_dp', '(sem detalhes)')}"
+        )
+
+    if sucessos:
+        contexto_ok = "\n".join(
+            f"  • {s['nome']} → candidato {s.get('candidato_id') or '(dry-run)'}"
+            for s in sucessos
+        )
+        contexto = f"\nNo mesmo email, já processei com sucesso:\n{contexto_ok}\n"
+    else:
+        contexto = ""
+
+    corpo = (
+        f"Pendência INTERNA — o cliente NÃO foi avisado deste problema técnico.\n"
+        f"(O reply no thread mencionou apenas que 'estou organizando detalhes'.)\n\n"
+        f"As admissões abaixo não puderam ser processadas por questões do nosso\n"
+        f"cadastro (cargo/CBO não está no eContador, função ambígua na planilha\n"
+        f"funcoes_cbo.xlsx, etc.). O cliente já mandou os dados — agora é o DP\n"
+        f"que precisa cadastrar a função correta no eContador (ou marcar X em\n"
+        f"um cargo equivalente na planilha) e reprocessar manualmente.\n"
+        f"{contexto}\n"
+        + "\n\n".join(blocos)
+        + f"\n\nPipeline Local — {datetime.now().isoformat(timespec='seconds')}"
+    )
+    return assunto, corpo
 
 
 # ============================================================
