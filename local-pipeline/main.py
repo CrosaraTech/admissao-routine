@@ -467,7 +467,46 @@ def processar_email(
     planilha_cbo: list[dict],
     config: Config,
 ) -> None:
-    """Wrapper compatível: coleta dados do msg solo e delega pra processar_admissao."""
+    """Processa um email novo USANDO O THREAD INTEIRO.
+
+    Mesmo emails "novos" (sem label processado/pendente) podem fazer parte
+    de uma conversa onde o cliente já mandou docs em mensagens anteriores
+    no mesmo thread (ex: 1º email só com a ficha, 2º email com o RG, 3º
+    com o ASO). Sempre busca o thread completo pra dar ao Claude o
+    contexto cumulativo — evita alucinação de campos não fornecidos no
+    email isolado mas presentes em outras mensagens.
+
+    Fallback: se houver falha pegando o thread, processa a msg solo.
+    """
+    thread_id = msg.get("threadId")
+    if thread_id:
+        try:
+            thread = gmail.obter_thread(thread_id)
+            msgs = thread.get("messages", []) or []
+            if len(msgs) > 1:
+                log.info(
+                    f"   📚 Thread tem {len(msgs)} mensagens — agregando contexto completo"
+                )
+                corpo = gmail.extrair_corpo_thread(thread)
+                anexos = gmail.baixar_anexos_thread(thread)
+                metadados = gmail.extrair_metadados(msgs[0])
+                processar_admissao(
+                    msg_id=msg["id"],
+                    msg_pra_resposta=msgs[-1],  # responde na msg mais recente
+                    corpo=corpo,
+                    anexos=anexos,
+                    metadados=metadados,
+                    gmail=gmail, claude=claude, api=api,
+                    planilha_cbo=planilha_cbo, config=config,
+                    ids_label_pendente_remover=[],
+                )
+                return
+        except Exception:
+            log.exception(
+                f"   Falha pegando thread {thread_id} — caindo pra msg solo"
+            )
+
+    # Caminho msg isolada (thread só tem essa msg, ou falha de fetch)
     corpo = gmail.extrair_corpo(msg)
     anexos = gmail.baixar_anexos(msg)
     metadados = gmail.extrair_metadados(msg)
