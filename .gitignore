@@ -15,6 +15,9 @@ admissao_log.json
 # Payloads salvos (contêm CPF, nomes, dados sensíveis)
 local-pipeline/payloads/
 
+# Planilha de admissões registradas (contém CPF, nomes, empresas)
+local-pipeline/admissoes.xlsx
+
 # Bytecode
 __pycache__/
 *.py[cod]

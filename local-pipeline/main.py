@@ -62,6 +62,7 @@ DEPARTAMENTOS_FILE = ROOT / "departamentos.json"
 PLANILHA_CBO = ROOT / "funcoes_cbo.xlsx"
 LOG_FILE = ROOT / "admissao_log.ndjson"
 PAYLOADS_DIR = ROOT / "payloads"
+PLANILHA_ADMISSOES = ROOT / "admissoes.xlsx"
 
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -152,6 +153,81 @@ def log_jsonl(entry: dict) -> None:
         log.warning(f"Falha escrevendo log: {e}")
 
 
+def _procedencia_de(resultado: dict) -> str:
+    """Constrói a frase curta de procedência pra coluna da planilha."""
+    if resultado.get("ok"):
+        if resultado.get("dry_run"):
+            return "Dry-run — não postado"
+        cid = resultado.get("candidato_id")
+        return f"Cadastrado — candidato {cid}" if cid else "Cadastrado"
+
+    if resultado.get("interno"):
+        erro = (resultado.get("erro_tecnico") or "?")[:120]
+        return f"Pendente interno — {erro}"
+
+    faltando = resultado.get("campos_faltando") or []
+    if faltando:
+        lista = ", ".join(faltando)[:120]
+        return f"Pendente cliente — faltam: {lista}"
+
+    motivo = resultado.get("motivo_cliente")
+    if motivo:
+        return f"Pendente cliente — {motivo[:120]}"
+
+    erro = (resultado.get("erro_tecnico") or "erro desconhecido")[:120]
+    return f"Falha técnica — {erro}"
+
+
+def registrar_admissao_planilha(
+    nome: str | None,
+    empresa: str | None,
+    cnpj: str | None,
+    procedencia: str,
+) -> None:
+    """Append uma linha em admissoes.xlsx. Cria com cabeçalho se não existir.
+
+    4 colunas: Nome do colaborador | Empresa | CNPJ | Procedência.
+    Append-only — cada execução pode adicionar várias linhas (1 por admissão
+    processada, sucesso ou pendência).
+    """
+    from openpyxl import Workbook, load_workbook
+    from openpyxl.styles import Alignment, Font, PatternFill
+
+    headers = ["Nome do colaborador", "Empresa", "CNPJ", "Procedência"]
+    try:
+        if PLANILHA_ADMISSOES.exists():
+            wb = load_workbook(PLANILHA_ADMISSOES)
+            ws = wb.active
+        else:
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "admissoes"
+            ws.append(headers)
+            # Estilo do cabeçalho
+            hfont = Font(bold=True, color="FFFFFF")
+            hfill = PatternFill(start_color="305496", end_color="305496", fill_type="solid")
+            for col in range(1, 5):
+                c = ws.cell(row=1, column=col)
+                c.font = hfont
+                c.fill = hfill
+                c.alignment = Alignment(horizontal="center")
+            ws.column_dimensions["A"].width = 35
+            ws.column_dimensions["B"].width = 35
+            ws.column_dimensions["C"].width = 20
+            ws.column_dimensions["D"].width = 50
+            ws.freeze_panes = "A2"
+
+        ws.append([
+            (nome or "?").strip(),
+            (empresa or "?").strip(),
+            (cnpj or "?").strip(),
+            procedencia.strip(),
+        ])
+        wb.save(PLANILHA_ADMISSOES)
+    except Exception as e:
+        log.warning(f"Falha gravando admissoes.xlsx: {e}")
+
+
 def salvar_payload(
     msg_id: str,
     metadados: dict,
@@ -191,44 +267,6 @@ def salvar_payload(
     }
     arq.write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
     return arq
-
-
-# ============================================================
-# Notificações por email
-# ============================================================
-
-def email_sucesso(candidato_id: str, payload: dict, empresa_nome: str) -> tuple[str, str]:
-    attrs = payload["data"]["attributes"]
-    nome = attrs.get("nome", "?")
-    assunto = f"[ADMISSÃO OK] {nome} — candidato {candidato_id}"
-    corpo = (
-        f"Admissão criada no eContador com sucesso.\n\n"
-        f"  Nome:        {nome}\n"
-        f"  CPF:         {attrs.get('cpf', '?')}\n"
-        f"  Empresa:     {empresa_nome}\n"
-        f"  Admissão:    {attrs.get('admissao', '?')}\n"
-        f"  Candidato:   {candidato_id}\n\n"
-        f"Lembrete: DP precisa preencher manualmente no Alterdata Desktop\n"
-        f"os ~14 campos que não chegam pelo sync (Matrícula eSocial,\n"
-        f"Regime de Jornada, Horas semanais, FGTS, etc.).\n\n"
-        f"Pipeline Local — {datetime.now().isoformat(timespec='seconds')}"
-    )
-    return assunto, corpo
-
-
-def email_pendencia(motivo: str, contexto: dict) -> tuple[str, str]:
-    """Email seco pro DP em casos de erro genérico (sem thread/cliente)."""
-    assunto = f"[ADMISSÃO PENDENTE] {motivo[:80]}"
-    ctx_str = json.dumps(contexto, ensure_ascii=False, indent=2)[:3000]
-    corpo = (
-        f"O pipeline NÃO conseguiu processar essa admissão automaticamente.\n\n"
-        f"Motivo: {motivo}\n\n"
-        f"---\n"
-        f"Contexto / dados já extraídos:\n{ctx_str}\n\n"
-        f"Revise e complete manualmente no eContador.\n\n"
-        f"Pipeline Local — {datetime.now().isoformat(timespec='seconds')}"
-    )
-    return assunto, corpo
 
 
 # ─── TEMP (REMOVER em produção): confirmação interativa de envio ──────
@@ -526,6 +564,9 @@ def processar_admissao(
     for i, bloco in enumerate(blocos, 1):
         attrs_pre = (bloco.get("data") or {}).get("attributes") or {}
         nome_pre = attrs_pre.get("nome") or f"funcionário #{i}"
+        # Extrai CNPJ direto do bloco pra preservar mesmo em caso de
+        # exception (antes da resolução de empresa)
+        cnpj_pre = bloco.get("cnpj_empresa") or attrs_pre.get("cnpj_empresa") or ""
         try:
             r = _processar_um_bloco(
                 bloco=bloco, indice=i, total=len(blocos),
@@ -547,6 +588,7 @@ def processar_admissao(
                 "campos_faltando": getattr(e, "campos_faltando", []) or [],
                 "payload_parcial": getattr(e, "payload_parcial", None) or bloco,
                 "razao_social": None,
+                "cnpj_empresa": cnpj_pre,
             })
 
     # 6. Agrega: label, reply ou email DP, log
@@ -557,11 +599,11 @@ def processar_admissao(
 
 
 def _resultado_pendencia_interna(
-    *, indice: int, nome: str, razao: str | None,
+    *, indice: int, nome: str, razao: str | None, cnpj: str | None,
     erro: str, diagnostico_dp: str, bloco: dict,
 ) -> dict:
     """Resultado pra pendência cujo problema é INTERNO (cargo/CBO/cadastro
-    do escritório). NÃO comunica nada ao cliente — só ao DP via email seco.
+    do escritório). NÃO comunica nada ao cliente — só registra na planilha.
     `interno: True` faz `_finalizar_lote` rotear pra esse caminho.
     """
     log.warning(f"      🔧 [{indice}] {nome}: pendência interna — {erro}")
@@ -577,6 +619,7 @@ def _resultado_pendencia_interna(
         "campos_faltando": [],
         "payload_parcial": bloco,
         "razao_social": razao,
+        "cnpj_empresa": cnpj,
     }
 
 
@@ -659,7 +702,7 @@ def _processar_um_bloco(
                 funcao_id, conf, bloco = funcao_id2, conf2, bloco2
             else:
                 return _resultado_pendencia_interna(
-                    indice=indice, nome=nome, razao=razao,
+                    indice=indice, nome=nome, razao=razao, cnpj=cnpj,
                     erro=f"Função ambígua após re-prompt: {fmsg2}",
                     diagnostico_dp=(
                         f"Cargo extraído (Claude tentou 2x): "
@@ -674,7 +717,7 @@ def _processar_um_bloco(
                 )
         else:
             return _resultado_pendencia_interna(
-                indice=indice, nome=nome, razao=razao,
+                indice=indice, nome=nome, razao=razao, cnpj=cnpj,
                 erro="Re-prompt do Claude não retornou bloco correspondente",
                 diagnostico_dp=(
                     f"Cargo extraído: '{dados.get('cargo')}'. "
@@ -684,7 +727,7 @@ def _processar_um_bloco(
             )
     elif funcao_id is None:
         return _resultado_pendencia_interna(
-            indice=indice, nome=nome, razao=razao,
+            indice=indice, nome=nome, razao=razao, cnpj=cnpj,
             erro=f"Função não encontrada: {fmsg}",
             diagnostico_dp=(
                 f"Cargo extraído: '{dados.get('cargo')}' / "
@@ -742,7 +785,7 @@ def _processar_um_bloco(
         return {
             "indice": indice, "nome": nome, "ok": True,
             "candidato_id": None, "dry_run": True,
-            "razao_social": razao,
+            "razao_social": razao, "cnpj_empresa": cnpj,
             "empresa_id": empresa_id, "departamento_id": depto_id, "funcao_id": funcao_id,
             "payload_path": str(arq_payload.name),
         }
@@ -758,7 +801,7 @@ def _processar_um_bloco(
         return {
             "indice": indice, "nome": nome, "ok": True,
             "candidato_id": candidato_id,
-            "razao_social": razao,
+            "razao_social": razao, "cnpj_empresa": cnpj,
             "empresa_id": empresa_id, "departamento_id": depto_id, "funcao_id": funcao_id,
             "payload_path": str(arq_payload.name),
         }
@@ -774,11 +817,10 @@ def _processar_um_bloco(
         "candidato_id": None,
         "erro_tecnico": f"{ref}: {body_err[:200]}",
         "motivo_cliente": (
-            f"Falha técnica ao enviar {nome} pro eContador ({ref}). "
-            f"O DP foi avisado e vai investigar."
+            f"Falha técnica ao enviar {nome} pro eContador ({ref})."
         ),
         "campos_faltando": [],
-        "razao_social": razao,
+        "razao_social": razao, "cnpj_empresa": cnpj,
         "payload_path": str(arq_payload.name),
     }
 
@@ -805,15 +847,27 @@ def _finalizar_lote(
     gmail: GmailClient,
     config: Config,
 ) -> None:
-    """Após processar N admissões: decide label, manda 1 email consolidado,
-    loga cada resultado."""
+    """Após processar N admissões: decide label, manda reply consolidado pro
+    cliente (se aplicável), registra TODOS na planilha de admissões, loga.
+
+    Não envia email separado pro DP — todas as informações de status (sucesso,
+    pendente cliente, pendente interno, falha técnica) ficam consolidadas em
+    admissoes.xlsx.
+    """
     if not resultados:
         log.warning("   _finalizar_lote chamado sem resultados")
         return
 
     n_ok = sum(1 for r in resultados if r["ok"])
     n_total = len(resultados)
-    log.info(f"   📊 Resultado do lote: {n_ok}/{n_total} sucesso")
+    sucessos = [r for r in resultados if r["ok"]]
+    falhas_internas = [r for r in resultados if not r["ok"] and r.get("interno")]
+    falhas_cliente = [r for r in resultados if not r["ok"] and not r.get("interno")]
+    log.info(
+        f"   📊 Lote: {n_ok}/{n_total} OK | "
+        f"{len(falhas_cliente)} cliente | "
+        f"{len(falhas_internas)} interno"
+    )
 
     todos_ok = (n_ok == n_total)
 
@@ -825,72 +879,41 @@ def _finalizar_lote(
             except Exception as e:
                 log.warning(f"   Falha removendo pendente de {mid}: {e}")
         gmail.aplicar_label(msg_id, config.label_processado)
+    else:
+        gmail.aplicar_label(msg_id, config.label_pendente)
 
-        # Email pro DP (não pro cliente) com resumo das criações
-        if config.email_dp:
+        # Reply no thread — só se há algo a comunicar ao cliente. Inclui
+        # sucessos, falhas_cliente e menciona pendências internas suavemente.
+        if msg_pra_resposta and (sucessos or falhas_cliente or falhas_internas):
             try:
-                assunto, corpo = _corpo_email_sucesso_lote(resultados)
-                gmail.enviar_email(config.email_dp, assunto, corpo)
+                corpo = _corpo_reply_lote(resultados)
+                if config.confirmar_replies and not _confirmar_envio(
+                    msg_pra_resposta, corpo, config.email_dp or None
+                ):
+                    log.warning("   ✋ Envio cancelado pelo usuário (--ask)")
+                else:
+                    gmail.responder_no_thread(
+                        msg_pra_resposta, corpo=corpo, cc=config.email_dp or None
+                    )
+                    log.info(
+                        f"   📨 Reply enviado "
+                        f"({len(sucessos)} OK + {len(falhas_cliente)} cliente "
+                        f"+ {len(falhas_internas)} interna)"
+                    )
             except Exception:
-                log.exception("Falha enviando email de sucesso pro DP")
+                log.exception("Falha enviando reply consolidado")
 
-        for r in resultados:
-            log_jsonl({
-                "msg_id": msg_id, "status": "sucesso",
-                "indice": r.get("indice"), "nome": r.get("nome"),
-                "candidato_id": r.get("candidato_id"),
-                "empresa_id": r.get("empresa_id"),
-                "departamento_id": r.get("departamento_id"),
-                "funcao_id": r.get("funcao_id"),
-                "payload_path": r.get("payload_path"),
-            })
-        return
+    # Planilha de admissões — 1 linha por funcionário, sucesso ou pendência
+    for r in resultados:
+        registrar_admissao_planilha(
+            nome=r.get("nome"),
+            empresa=r.get("razao_social"),
+            cnpj=r.get("cnpj_empresa"),
+            procedencia=_procedencia_de(r),
+        )
+    log.info(f"   📊 Planilha admissoes.xlsx atualizada (+{len(resultados)} linha(s))")
 
-    # Tem pelo menos UMA falha — label pendente
-    gmail.aplicar_label(msg_id, config.label_pendente)
-
-    sucessos = [r for r in resultados if r["ok"]]
-    falhas_internas = [r for r in resultados if not r["ok"] and r.get("interno")]
-    falhas_cliente = [r for r in resultados if not r["ok"] and not r.get("interno")]
-    log.info(
-        f"   📊 Detalhe: {len(sucessos)} OK | "
-        f"{len(falhas_cliente)} pendente cliente | "
-        f"{len(falhas_internas)} pendente interna (DP)"
-    )
-
-    # 1. Reply no thread — só se há algo a comunicar ao cliente.
-    #    Inclui sucessos (pra ele saber que parte foi cadastrada),
-    #    falhas_cliente (pedindo o que falta), e menciona suavemente
-    #    pendências internas como "estou organizando aqui do nosso lado"
-    #    (sem expor termos técnicos como CBO).
-    if msg_pra_resposta and (sucessos or falhas_cliente or falhas_internas):
-        try:
-            corpo = _corpo_reply_lote(resultados)
-            if config.confirmar_replies and not _confirmar_envio(
-                msg_pra_resposta, corpo, config.email_dp or None
-            ):
-                log.warning("   ✋ Envio cancelado pelo usuário (--ask)")
-            else:
-                gmail.responder_no_thread(
-                    msg_pra_resposta, corpo=corpo, cc=config.email_dp or None
-                )
-                log.info(
-                    f"   📨 Reply consolidado enviado "
-                    f"({len(sucessos)} OK + {len(falhas_cliente)} cliente "
-                    f"+ {len(falhas_internas)} interna)"
-                )
-        except Exception:
-            log.exception("Falha enviando reply consolidado")
-
-    # 2. Email seco pro DP — só se há pendências internas (técnicas)
-    if falhas_internas and config.email_dp:
-        try:
-            assunto, corpo = _corpo_email_pendencia_interna(falhas_internas, sucessos)
-            gmail.enviar_email(config.email_dp, assunto, corpo)
-            log.info(f"   📧 Email DP enviado ({len(falhas_internas)} pendência(s) interna(s))")
-        except Exception:
-            log.exception("Falha enviando email seco pro DP")
-
+    # NDJSON técnico (separado da planilha, pra audit/debug interno)
     for r in resultados:
         log_jsonl({
             "msg_id": msg_id,
@@ -907,35 +930,6 @@ def _finalizar_lote(
             "erro": r.get("erro_tecnico"),
             "_validacao_bloqueada": r.get("campos_faltando", []),
         })
-
-
-def _corpo_email_sucesso_lote(resultados: list[dict]) -> tuple[str, str]:
-    """Email DP quando TODOS deram certo (1 ou N)."""
-    n = len(resultados)
-    razao = next((r.get("razao_social") for r in resultados if r.get("razao_social")), "?")
-    if n == 1:
-        r = resultados[0]
-        assunto = f"[ADMISSÃO OK] {r['nome']} — candidato {r.get('candidato_id', '?')}"
-    else:
-        assunto = f"[ADMISSÃO OK] {n} candidatos criados ({razao})"
-
-    linhas = []
-    for r in resultados:
-        cid = r.get("candidato_id") or ("(dry-run)" if r.get("dry_run") else "?")
-        linhas.append(f"  • {r['nome']} → candidato {cid}")
-
-    corpo = (
-        f"Admissão criada no eContador com sucesso.\n\n"
-        f"Empresa: {razao}\n\n"
-        f"Funcionário(s) cadastrado(s):\n"
-        + "\n".join(linhas)
-        + "\n\n"
-        + "Lembrete: DP precisa preencher manualmente no Alterdata Desktop\n"
-        + "os ~14 campos que não chegam pelo sync E-plugin (Matrícula eSocial,\n"
-        + "Regime de Jornada, FGTS, etc.).\n\n"
-        + f"Pipeline Local — {datetime.now().isoformat(timespec='seconds')}"
-    )
-    return assunto, corpo
 
 
 def _corpo_reply_lote(resultados: list[dict]) -> str:
@@ -1002,52 +996,6 @@ def _corpo_reply_lote(resultados: list[dict]) -> str:
         f"Atenciosamente,\n"
         f"DP — Crosara Contabilidade"
     )
-
-
-def _corpo_email_pendencia_interna(
-    internas: list[dict],
-    sucessos: list[dict],
-) -> tuple[str, str]:
-    """Email seco pro DP com detalhes técnicos das pendências internas.
-
-    Inclui contexto dos sucessos do mesmo email pra DP saber o que já foi
-    processado e quais ainda precisam de intervenção manual.
-    """
-    n = len(internas)
-    nomes = [r["nome"] for r in internas]
-    nomes_str = ", ".join(nomes[:3]) + ("..." if len(nomes) > 3 else "")
-    assunto = f"[ADMISSÃO — Resolver internamente] {n} candidato(s): {nomes_str}"
-
-    blocos = []
-    for r in internas:
-        blocos.append(
-            f"=== {r['nome']} ===\n"
-            f"Erro: {r.get('erro_tecnico', '?')}\n"
-            f"Diagnóstico: {r.get('diagnostico_dp', '(sem detalhes)')}"
-        )
-
-    if sucessos:
-        contexto_ok = "\n".join(
-            f"  • {s['nome']} → candidato {s.get('candidato_id') or '(dry-run)'}"
-            for s in sucessos
-        )
-        contexto = f"\nNo mesmo email, já processei com sucesso:\n{contexto_ok}\n"
-    else:
-        contexto = ""
-
-    corpo = (
-        f"Pendência INTERNA — o cliente NÃO foi avisado deste problema técnico.\n"
-        f"(O reply no thread mencionou apenas que 'estou organizando detalhes'.)\n\n"
-        f"As admissões abaixo não puderam ser processadas por questões do nosso\n"
-        f"cadastro (cargo/CBO não está no eContador, função ambígua na planilha\n"
-        f"funcoes_cbo.xlsx, etc.). O cliente já mandou os dados — agora é o DP\n"
-        f"que precisa cadastrar a função correta no eContador (ou marcar X em\n"
-        f"um cargo equivalente na planilha) e reprocessar manualmente.\n"
-        f"{contexto}\n"
-        + "\n\n".join(blocos)
-        + f"\n\nPipeline Local — {datetime.now().isoformat(timespec='seconds')}"
-    )
-    return assunto, corpo
 
 
 # ============================================================
@@ -1152,19 +1100,20 @@ def _processar_seguro(
             except Exception:
                 log.exception("Falha enviando reply no thread")
 
-        # Fallback email seco pro DP — pula se usuário cancelou (--ask)
-        if (
-            not reply_enviado
-            and not envio_pulado_pelo_usuario  # TEMP-CONFIRMAR-REPLIES
-            and config.email_dp
-        ):
-            try:
-                assunto, corpo = email_pendencia(str(e), {})
-                gmail.enviar_email(config.email_dp, assunto, corpo)
-            except Exception:
-                log.exception("Falha enviando email seco pro DP")
+        # Sem email seco pro DP — informações de pendência ficam consolidadas
+        # em admissoes.xlsx. Aqui (catch de erro orquestrador-level), o
+        # pipeline pode não ter dado tempo de chegar em _finalizar_lote pra
+        # popular a planilha; registramos uma linha fallback com o que temos.
+        try:
+            registrar_admissao_planilha(
+                nome="?",
+                empresa=None,
+                cnpj=None,
+                procedencia=f"Falha técnica orquestrador — {str(e)[:120]}",
+            )
+        except Exception:
+            log.exception("Falha registrando linha de erro na planilha")
 
-        # 3. Log NDJSON
         log_jsonl({
             "msg_id": msg_id,
             "status": "pendente_validacao" if campos_faltando else "erro",
