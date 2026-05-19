@@ -298,17 +298,15 @@ def _raise_pendencia(
     raise err
 
 
-_CAMPOS_RESUMO = [
-    # (rotulo, lista de chaves a procurar — primeira não-vazia ganha)
-    ("Nome", ["nome", "nome_completo", "funcionario"]),
-    ("CPF", ["cpf"]),
-    ("Data de Admissão", ["admissao", "data_admissao"]),
-    ("Data de Nascimento", ["nascimento", "data_nascimento", "dataNasc"]),
-    ("Nome da Mãe", ["nomedamae", "nome_mae", "mae"]),
-    ("Cargo", ["nomecargo", "cargo", "funcao"]),
-    ("Salário", ["salario", "salario_base"]),
-    ("CNPJ Empresa", ["cnpj_empresa", "cnpjEmpresa", "cnpj"]),
-]
+def _lista_natural(itens: list[str]) -> str:
+    """Junta itens em frase natural PT-BR: 'a', 'a e b', 'a, b e c'."""
+    if not itens:
+        return ""
+    if len(itens) == 1:
+        return itens[0]
+    if len(itens) == 2:
+        return f"{itens[0]} e {itens[1]}"
+    return ", ".join(itens[:-1]) + " e " + itens[-1]
 
 
 def email_resposta_cliente(
@@ -316,80 +314,63 @@ def email_resposta_cliente(
     faltantes: list[str] | None,
     motivo_livre: str | None = None,
 ) -> str:
-    """Corpo da resposta amigável ao cliente no thread original.
+    """Corpo conversacional pro cliente. Foco no que FALTA; não lista o que
+    já recebemos (a info ficou em payloads/ pra auditoria — o cliente vê o
+    próprio email original no thread se quiser conferir).
 
-    Adapta o conteúdo ao contexto:
-      - faltantes não-vazio: lista estruturada (caminho do validador) + o
-        que já foi extraído pra cliente conferir
-      - motivo_livre: texto livre (Claude marcou _pendente, CNPJ inválido,
-        função sem match, etc.)
-
-    Procura dados em MÚLTIPLAS fontes do payload pra montar o "✅ O que já
-    recebemos":
-      1. payload.data.attributes  (caminho da validação — payload montado)
-      2. payload._dados_parciais  (caminho Claude _pendente — não montou
-         payload, mas guardou o que extraiu aqui)
-      3. payload (raiz)            (campos top-level tipo cnpj_empresa)
+    3 caminhos:
+      - faltantes (lista do validador) → "ainda preciso de A, B e C"
+      - motivo_livre (Claude _pendente etc.) → repassa a frase do motivo
+      - sem nada estruturado → pedido genérico pra reenviar docs
     """
     payload = payload or {}
     attrs = (payload.get("data") or {}).get("attributes") or {}
     dados_parciais = payload.get("_dados_parciais") or {}
 
-    def buscar(chaves: list[str]):
-        """Procura nas 3 fontes (attrs → _dados_parciais → raiz), primeiro hit ganha."""
-        for fonte in (attrs, dados_parciais, payload):
-            for k in chaves:
-                v = fonte.get(k) if isinstance(fonte, dict) else None
-                if v not in (None, "", 0, [], {}):
-                    return v
-        return None
-
-    nome = buscar(["nome", "nome_completo", "funcionario"]) or "este(a) candidato(a)"
-
-    ja_temos: list[str] = []
-    for rotulo, chaves in _CAMPOS_RESUMO:
-        valor = buscar(chaves)
-        if valor not in (None, "", 0):
-            ja_temos.append(f"  • {rotulo}: {valor}")
-
-    # Bonus: se _dados_parciais tem chaves extras úteis, adiciona no fim
-    chaves_ja_listadas = {k for _, chs in _CAMPOS_RESUMO for k in chs}
-    for k, v in dados_parciais.items():
-        if k in chaves_ja_listadas or k.startswith("_"):
+    # Procura o nome em cascata pra personalizar (attrs → parciais → raiz)
+    nome = None
+    for fonte in (attrs, dados_parciais, payload):
+        if not isinstance(fonte, dict):
             continue
-        if isinstance(v, (str, int, float)) and v not in ("", 0):
-            ja_temos.append(f"  • {k}: {v}")
+        for k in ("nome", "nome_completo", "funcionario"):
+            v = fonte.get(k)
+            if isinstance(v, str) and v.strip():
+                nome = v.strip()
+                break
+        if nome:
+            break
 
-    bloco_temos = "\n".join(ja_temos) or "  (ainda não conseguimos identificar dados)"
+    abertura_cadastro = (
+        f"Pra fechar o cadastro de {nome} aqui no sistema"
+        if nome
+        else "Pra concluir esse cadastro aqui no sistema"
+    )
 
     if faltantes:
-        bloco_pendentes = "\n".join(f"  • {f}" for f in faltantes)
+        lista = _lista_natural(faltantes)
         miolo = (
-            f"Para concluirmos o cadastro de {nome}, ainda precisamos "
-            f"dos seguintes dados que não conseguimos identificar:\n\n"
-            f"⚠ Pendentes:\n{bloco_pendentes}\n\n"
-            f"✅ O que já recebemos:\n{bloco_temos}\n\n"
+            f"{abertura_cadastro}, ainda preciso de algumas informações "
+            f"que não consegui identificar nos documentos: {lista}.\n\n"
+            f"Pode me responder esse mesmo e-mail com esses dados? Não "
+            f"precisa reenviar o que já mandou — só o que falta.\n\n"
         )
     elif motivo_livre:
         miolo = (
-            f"Recebemos sua mensagem, mas ainda não temos informação "
-            f"suficiente pra cadastrar a admissão.\n\n"
-            f"⚠ {motivo_livre}\n\n"
-            f"✅ O que já recebemos:\n{bloco_temos}\n\n"
+            f"{motivo_livre}\n\n"
+            f"Pode me responder esse mesmo e-mail com o que falta? "
+            f"Não precisa reenviar os documentos que já mandou.\n\n"
         )
     else:
         miolo = (
-            f"Recebemos sua mensagem, mas ainda não conseguimos processar "
-            f"a admissão automaticamente. Pode reenviar os documentos e "
-            f"informações do(a) candidato(a)?\n\n"
+            f"Recebi sua mensagem mas não consegui ler os documentos da "
+            f"admissão. Pode reenviar a ficha com RG, CPF, CTPS, comprovante "
+            f"de endereço e ASO do(a) candidato(a)?\n\n"
         )
 
     return (
         f"Olá!\n\n"
         f"{miolo}"
-        f"Por favor, responda este mesmo e-mail com o que falta — "
-        f"não precisa reenviar os documentos que já mandou.\n\n"
-        f"Qualquer dúvida, é só responder.\n\n"
+        f"Qualquer dúvida, é só me chamar.\n\n"
         f"Atenciosamente,\n"
         f"DP — Crosara Contabilidade"
     )
