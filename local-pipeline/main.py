@@ -298,6 +298,19 @@ def _raise_pendencia(
     raise err
 
 
+_CAMPOS_RESUMO = [
+    # (rotulo, lista de chaves a procurar — primeira não-vazia ganha)
+    ("Nome", ["nome", "nome_completo", "funcionario"]),
+    ("CPF", ["cpf"]),
+    ("Data de Admissão", ["admissao", "data_admissao"]),
+    ("Data de Nascimento", ["nascimento", "data_nascimento", "dataNasc"]),
+    ("Nome da Mãe", ["nomedamae", "nome_mae", "mae"]),
+    ("Cargo", ["nomecargo", "cargo", "funcao"]),
+    ("Salário", ["salario", "salario_base"]),
+    ("CNPJ Empresa", ["cnpj_empresa", "cnpjEmpresa", "cnpj"]),
+]
+
+
 def email_resposta_cliente(
     payload: dict | None,
     faltantes: list[str] | None,
@@ -310,23 +323,43 @@ def email_resposta_cliente(
         que já foi extraído pra cliente conferir
       - motivo_livre: texto livre (Claude marcou _pendente, CNPJ inválido,
         função sem match, etc.)
+
+    Procura dados em MÚLTIPLAS fontes do payload pra montar o "✅ O que já
+    recebemos":
+      1. payload.data.attributes  (caminho da validação — payload montado)
+      2. payload._dados_parciais  (caminho Claude _pendente — não montou
+         payload, mas guardou o que extraiu aqui)
+      3. payload (raiz)            (campos top-level tipo cnpj_empresa)
     """
     payload = payload or {}
     attrs = (payload.get("data") or {}).get("attributes") or {}
-    nome = attrs.get("nome") or "este(a) candidato(a)"
+    dados_parciais = payload.get("_dados_parciais") or {}
 
-    # Resumo do que já foi extraído (campos chave)
+    def buscar(chaves: list[str]):
+        """Procura nas 3 fontes (attrs → _dados_parciais → raiz), primeiro hit ganha."""
+        for fonte in (attrs, dados_parciais, payload):
+            for k in chaves:
+                v = fonte.get(k) if isinstance(fonte, dict) else None
+                if v not in (None, "", 0, [], {}):
+                    return v
+        return None
+
+    nome = buscar(["nome", "nome_completo", "funcionario"]) or "este(a) candidato(a)"
+
     ja_temos: list[str] = []
-    def add(rotulo: str, valor) -> None:
+    for rotulo, chaves in _CAMPOS_RESUMO:
+        valor = buscar(chaves)
         if valor not in (None, "", 0):
             ja_temos.append(f"  • {rotulo}: {valor}")
 
-    add("Nome", attrs.get("nome"))
-    add("CPF", attrs.get("cpf"))
-    add("Data de Admissão", attrs.get("admissao"))
-    add("Data de Nascimento", attrs.get("nascimento"))
-    add("Cargo", attrs.get("nomecargo"))
-    add("Salário", attrs.get("salario"))
+    # Bonus: se _dados_parciais tem chaves extras úteis, adiciona no fim
+    chaves_ja_listadas = {k for _, chs in _CAMPOS_RESUMO for k in chs}
+    for k, v in dados_parciais.items():
+        if k in chaves_ja_listadas or k.startswith("_"):
+            continue
+        if isinstance(v, (str, int, float)) and v not in ("", 0):
+            ja_temos.append(f"  • {k}: {v}")
+
     bloco_temos = "\n".join(ja_temos) or "  (ainda não conseguimos identificar dados)"
 
     if faltantes:

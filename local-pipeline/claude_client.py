@@ -50,9 +50,23 @@ Você está rodando dentro do pipeline local da Crosara Contabilidade.
 - NÃO inclua comentários, explicação ou texto antes/depois do JSON.
 - Os IDs de `empresa`, `departamento` e `funcao` serão substituídos pelo
   pipeline depois — use placeholders "1" nesses 3 relationships.
-- Se faltarem dados essenciais (lista da seção 10 do briefing), retorne:
-  {"_pendente": true, "_motivo": "<descrição curta>", "_dados_parciais": {...}}
-  com os campos que conseguiu extrair em `_dados_parciais`.
+- Se faltarem dados essenciais (lista da seção 10 do briefing), OU se o
+  email contém múltiplas admissões (mais de um funcionário), retorne:
+  {"_pendente": true, "_motivo": "<descrição curta e ESPECÍFICA>",
+   "_dados_parciais": {...}}
+
+  ⚠ IMPORTANTE: SEMPRE popule `_dados_parciais` com TUDO que você conseguiu
+  extrair do email/anexos, mesmo quando incompleto. Esse objeto é mostrado
+  ao cliente no email de resposta — ele precisa VER o que você identificou
+  pra confiar no pipeline. NUNCA retorne _dados_parciais vazio se há algum
+  dado identificável nos documentos.
+
+  Use chaves PT-BR simples no _dados_parciais (ex: nome, cpf, nascimento,
+  nomedamae, cargo, salario, cnpj_empresa). Se há múltiplos funcionários,
+  liste TODOS em _dados_parciais com prefixo (ex: "funcionario_1_nome",
+  "funcionario_2_nome") e explique no _motivo que precisa de 1 email por
+  funcionário.
+
 - IMPORTANTE: extraia também o campo `cnpj_empresa` (raiz) com o CNPJ
   da empresa contratante, e `departamento_sugerido` (string livre, opcional)
   pro pipeline resolver depois. Ambos vão FORA do `data` — no nível raiz
