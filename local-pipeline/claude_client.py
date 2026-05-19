@@ -476,6 +476,100 @@ class ClaudeClient:
             "custo_usd_estimado": round(custo, 4),
         }
 
+    # ---- Escolha auxiliar de departamento por cargo ------------------
+
+    def escolher_departamento_por_cargo(
+        self,
+        cargo: str,
+        deptos: list[dict],
+        cbo: str | None = None,
+    ) -> tuple[str | None, str]:
+        """Pergunta ao Claude qual departamento melhor encaixa pra um cargo,
+        dada a lista de departamentos disponíveis na empresa.
+
+        Usado como fallback quando o cliente não mencionou o departamento
+        no email e a empresa tem múltiplos cadastrados.
+
+        Chamada FOCADA e BARATA:
+          - Sem system prompt (briefing pesado não é necessário aqui)
+          - max_tokens=300 (resposta curta)
+          - Só texto, sem anexos
+
+        Retorna (departamento_id ou None, motivo).
+        None significa: Claude não conseguiu escolher com confiança
+        (cargo não se encaixa em nenhum dos deptos disponíveis).
+        """
+        if not deptos:
+            return None, "Lista de departamentos vazia"
+
+        # Throttle
+        delta = time.time() - self._ts_ultima_chamada
+        if 0 < delta < self.INTERVALO_MIN_ENTRE_CHAMADAS:
+            time.sleep(self.INTERVALO_MIN_ENTRE_CHAMADAS - delta)
+
+        deptos_str = "\n".join(
+            f"  - id={d['id']}, nome={d.get('nome', '?')}" for d in deptos
+        )
+        cbo_str = f" (CBO {cbo})" if cbo else ""
+
+        prompt = (
+            f"Um novo funcionário foi contratado com o cargo "
+            f"'{cargo}'{cbo_str}. Em qual departamento da empresa ele/ela "
+            f"vai trabalhar?\n\n"
+            f"DEPARTAMENTOS DISPONÍVEIS:\n{deptos_str}\n\n"
+            f"Escolha o que melhor encaixa pro cargo e retorne APENAS um "
+            f"JSON dentro de bloco ```json``` com:\n"
+            f"```json\n"
+            f"{{\n"
+            f"  \"departamento_id\": \"<id escolhido como string>\",\n"
+            f"  \"motivo\": \"<frase curta justificando a escolha>\"\n"
+            f"}}\n"
+            f"```\n\n"
+            f"Se NENHUM departamento da lista se encaixa claramente pra "
+            f"esse cargo (ex: cargo administrativo numa empresa só com "
+            f"departamentos operacionais), retorne `departamento_id: null` "
+            f"e explique no motivo."
+        )
+
+        log.info(
+            f"   🤖 Pedindo Claude pra escolher depto entre {len(deptos)} "
+            f"opções (cargo: '{cargo}')"
+        )
+        msg = self.client.messages.create(
+            model=self.model,
+            max_tokens=300,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        self._ts_ultima_chamada = time.time()
+        self._registrar_uso(getattr(msg, "usage", None))
+
+        resposta = "\n".join(
+            b.text for b in msg.content if getattr(b, "type", None) == "text"
+        )
+
+        try:
+            parsed = self._parsear_json(resposta)
+        except ValueError as e:
+            log.warning(f"   Claude resposta não parseable: {e}")
+            return None, "Resposta do Claude não parseable"
+
+        dep_id = parsed.get("departamento_id")
+        motivo = (parsed.get("motivo") or "").strip()
+
+        if dep_id in (None, "null", "", 0):
+            return None, motivo or "Claude não identificou departamento adequado"
+
+        # Validação anti-alucinação: ID precisa estar na lista que enviamos
+        ids_validos = {str(d["id"]) for d in deptos}
+        if str(dep_id) not in ids_validos:
+            log.warning(
+                f"   Claude retornou departamento_id={dep_id!r} fora da lista "
+                f"— descartando (anti-alucinação)"
+            )
+            return None, f"Claude inventou um ID ({dep_id}) que não está na lista"
+
+        return str(dep_id), motivo
+
     # ---- Self-consistency (multi-chamada) ----------------------------
 
     @staticmethod

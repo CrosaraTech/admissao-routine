@@ -730,9 +730,29 @@ def _processar_um_bloco(
         deptos_api=deptos_api, departamento_sugerido=dados["departamento_sugerido"],
         departamentos_json_paths=[DEPARTAMENTOS_FILE, ROOT.parent / "departamentos.json"],
     )
-    if depto_msg != "ok":
-        # Departamento é nosso cadastro (eContador + departamentos.json), não
-        # responsabilidade do cliente. NÃO escala pro cliente — pendência interna.
+
+    # Fallback inteligente: se o resolver determinístico não bateu, pede pro
+    # Claude escolher o departamento com base no nome do cargo. Geralmente o
+    # cargo já diz o setor (Motorista→Transporte, Vendedor→Vendas, etc.).
+    if depto_msg != "ok" and deptos_api and len(deptos_api) > 1 and dados.get("cargo"):
+        try:
+            id_escolhido, motivo_ia = claude.escolher_departamento_por_cargo(
+                cargo=dados["cargo"],
+                deptos=deptos_api,
+                cbo=dados.get("cbo"),
+            )
+            if id_escolhido:
+                depto_id = id_escolhido
+                depto_msg = "ok-ia"
+                log.info(
+                    f"      🗂 Depto (IA): {depto_id} — {motivo_ia}"
+                )
+        except Exception:
+            log.exception("      Falha no fallback IA pra depto — seguindo")
+
+    if depto_msg not in ("ok", "ok-ia"):
+        # Sem resolução determinística NEM fallback IA — pendência interna.
+        # Cliente não vê (problema do nosso cadastro), DP recebe a lista.
         deptos_disponiveis = (
             "; ".join(f"{d['nome']} (id={d['id']})" for d in deptos_api[:15])
             if deptos_api else "(empresa sem departamentos retornados pela API)"
@@ -742,7 +762,9 @@ def _processar_um_bloco(
             erro=f"Departamento não resolvido: {depto_msg}",
             diagnostico_dp=(
                 f"Empresa {razao} (CNPJ {cnpj}) — {depto_msg}\n"
+                f"Cargo extraído: {dados.get('cargo') or '(nenhum)'}\n"
                 f"Departamentos disponíveis no eContador: {deptos_disponiveis}\n"
+                f"O fallback de IA também não conseguiu escolher.\n"
                 f"Resolver: (a) configurar `departamento_default_id` em "
                 f"departamentos.json pra essa empresa, ou (b) adicionar "
                 f"`nome_variantes` que cubra o nome usado no email, ou "
@@ -750,7 +772,8 @@ def _processar_um_bloco(
             ),
             bloco=bloco,
         )
-    log.info(f"      🗂 Depto: {depto_id}")
+    if depto_msg == "ok":
+        log.info(f"      🗂 Depto: {depto_id}")
 
     # Função — pendências aqui são INTERNAS (problema do nosso cadastro/planilha,
     # não do cliente). Não escala pro cliente; vira email seco pro DP.
