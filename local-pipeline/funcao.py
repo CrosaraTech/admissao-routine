@@ -130,6 +130,28 @@ def _resolver_em(
     if top_score >= CONFIANCA_ALTA:
         # Ambiguidade: top empata com o segundo
         if len(scores) >= 2 and (top_score - scores[1][0]) < 0.05:
+            empatados = [f for s, f in scores if abs(s - top_score) < 0.05]
+
+            # Caso especial: cargos eContador tem DUPLICATAS (mesmo nome
+            # exato + mesmo CBO, IDs diferentes). Pra esses, qualquer ID
+            # serve — pegamos o primeiro determinístico (menor id) sem
+            # incomodar o cliente.
+            nome_top = _norm(top["nome_cargo"])
+            cbo_top = str(top.get("cbo") or "")
+            duplicatas = [
+                f for f in empatados
+                if _norm(f["nome_cargo"]) == nome_top
+                and str(f.get("cbo") or "") == cbo_top
+            ]
+            if len(duplicatas) == len(empatados):
+                escolhido = min(duplicatas, key=lambda f: int(str(f["funcao_id"]) or "0"))
+                log.info(
+                    f"[{contexto}] '{escolhido['nome_cargo']}' "
+                    f"(id={escolhido['funcao_id']}, conf={top_score:.0%}) "
+                    f"— {len(duplicatas)} duplicata(s) do eContador, escolhi a 1ª"
+                )
+                return escolhido["funcao_id"], top_score, [], "ok"
+
             ambiguos = [f for s, f in scores[:5] if s >= CONFIANCA_AMBIGUA]
             return (
                 None, top_score, ambiguos,

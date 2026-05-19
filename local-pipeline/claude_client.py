@@ -194,17 +194,24 @@ class ClaudeClient:
         if funcoes_candidatas:
             intro_partes += [
                 "",
-                "## CARGOS CANDIDATOS (planilha CBO da Crosara)",
-                "O pipeline filtrou funções compatíveis com o cargo extraído. ",
-                "Use o `funcao_id` mais adequado e mencione no campo `nomecargo` ",
-                "o nome mais próximo da planilha (UPPERCASE).",
+                "## DESAMBIGUAÇÃO DE CARGO",
+                "O pipeline encontrou múltiplas funções parecidas no cadastro "
+                "Crosara pro cargo que você extraiu. Sua tarefa nesse turno é "
+                "ESCOLHER UMA da lista abaixo:",
                 "",
-                "| funcao_id | nome | cbo |",
+                "1. Olhe a função, CBO e setor implícito de cada linha.",
+                "2. Copie o `nome_cargo` EXATO (UPPERCASE) pro campo `nomecargo` "
+                "do payload — o pipeline localiza a função pelo nome.",
+                "3. Se houver entradas IGUAIS (mesmo nome + CBO), pode escolher "
+                "qualquer uma — são duplicatas do cadastro do eContador.",
+                "",
+                "| funcao_id | nome_cargo | cbo |",
                 "|---|---|---|",
             ]
             for f in funcoes_candidatas[:50]:
+                nome = f.get("nome_cargo") or f.get("nome") or "?"
                 intro_partes.append(
-                    f"| {f.get('funcao_id', '?')} | {f.get('nome', '?')} | {f.get('cbo', '?')} |"
+                    f"| {f.get('funcao_id', '?')} | {nome} | {f.get('cbo', '?')} |"
                 )
 
         intro_partes += [
