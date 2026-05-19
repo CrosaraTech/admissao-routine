@@ -680,13 +680,18 @@ def _processar_um_bloco(
     dados = extrair_dados_consulta(bloco)
     cnpj = dados["cnpj_empresa"]
     if not cnpj:
-        _raise_pendencia(
-            f"CNPJ ausente para {nome}",
-            motivo_cliente=(
-                f"Pra cadastrar {nome}, preciso do CNPJ da empresa "
-                f"contratante. Não consegui identificar nos documentos."
+        # CNPJ não extraído → problema NOSSO (DP olha o remetente/assinatura
+        # do email pra deduzir qual cliente é). NÃO vai pro cliente.
+        return _resultado_pendencia_interna(
+            indice=indice, nome=nome, razao=None, cnpj=None,
+            erro="CNPJ da empresa contratante não foi extraído do email/anexos",
+            diagnostico_dp=(
+                f"Claude não identificou CNPJ pra {nome}. DP pode olhar o "
+                f"remetente do email (campo From), assinatura, ou logo nos "
+                f"documentos pra descobrir a empresa contratante e seguir o "
+                f"cadastro manualmente."
             ),
-            payload_parcial=bloco,
+            bloco=bloco,
         )
 
     # Empresa (cache)
@@ -696,13 +701,20 @@ def _processar_um_bloco(
         empresa_id, empresa_attrs = api.resolver_empresa(cnpj)
         cache_empresa[cnpj] = (empresa_id, empresa_attrs)
     if not empresa_id:
-        _raise_pendencia(
-            f"CNPJ {cnpj} não encontrado em /empresas",
-            motivo_cliente=(
-                f"O CNPJ {cnpj} (referenciado pra {nome}) não está "
-                f"cadastrado no nosso sistema. Pode confirmar?"
+        # CNPJ não cadastrado no eContador → problema NOSSO (a Crosara
+        # ainda não fez onboarding dessa empresa, ou CNPJ tem typo).
+        # NÃO vai pro cliente — DP resolve internamente.
+        return _resultado_pendencia_interna(
+            indice=indice, nome=nome, razao=None, cnpj=cnpj,
+            erro=f"CNPJ {cnpj} não está cadastrado no eContador",
+            diagnostico_dp=(
+                f"O CNPJ {cnpj} (extraído pra {nome}) não retornou empresa "
+                f"em GET /empresas?filter[cpfcnpj]={cnpj}. Possibilidades: "
+                f"(a) Crosara ainda não fez onboarding dessa empresa no "
+                f"eContador — cadastrar primeiro; (b) CNPJ tem typo/Claude "
+                f"extraiu errado — conferir nos documentos originais."
             ),
-            payload_parcial=bloco,
+            bloco=bloco,
         )
     razao = empresa_attrs.get("nome", "?")
     log.info(f"      🏢 Empresa {empresa_id}: {razao}")
