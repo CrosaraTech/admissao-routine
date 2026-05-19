@@ -86,11 +86,12 @@ class Config:
     dry_run: bool
     claude_model: str
     claude_max_tokens: int
-    # ─── TEMP (REMOVER em produção) ─────────────────────────────
-    # Flag setada via CLI --ask. Quando True, pergunta confirmação
-    # antes de enviar cada email de pendência. Útil durante calibração
-    # do prompt do Claude e regras de extração.
-    confirmar_replies: bool = False
+    # ─── TEMP-CONFIRMAR-REPLIES (REMOVER em produção) ───────────
+    # Default LIGADO durante calibração: pergunta confirmação antes
+    # de enviar cada email de pendência. Auto-desligado quando o
+    # processo roda sem TTY (Task Scheduler, cron, etc.). Pode forçar
+    # off com --no-ask.
+    confirmar_replies: bool = True
 
 
 def carregar_config() -> Config:
@@ -255,7 +256,15 @@ def _previa_reply(msg_orig: dict, corpo: str, cc: str | None) -> str:
 
 
 def _confirmar_envio(msg_orig: dict, corpo: str, cc: str | None) -> bool:
-    """TEMP-CONFIRMAR-REPLIES: imprime preview e pergunta s/N. Default N."""
+    """TEMP-CONFIRMAR-REPLIES: imprime preview e pergunta s/N. Default N.
+
+    Se stdin não estiver disponível (fora do esperado, pq o caller já
+    desliga via `confirmar_replies = False` sem TTY), retorna False
+    (não envia) por precaução.
+    """
+    if not sys.stdin.isatty():
+        log.warning("_confirmar_envio chamado sem TTY — abortando envio")
+        return False
     print(_previa_reply(msg_orig, corpo, cc))
     try:
         resp = input("Enviar este email? [s/N]: ").strip().lower()
@@ -791,12 +800,20 @@ def main() -> int:
         help="(Compatibilidade) idêntico ao padrão.",
     )
     # ─── TEMP-CONFIRMAR-REPLIES (remover em produção) ────────────────
+    # Default: confirma antes de cada email (modo calibração). Auto-desliga
+    # quando não tem TTY (Task Scheduler). Flag --no-ask força off sempre.
+    parser.add_argument(
+        "--no-ask",
+        action="store_true",
+        help="[TEMP] Desliga a confirmação interativa antes de cada email "
+             "de pendência. Default é PERGUNTAR; só passe esta flag se quiser "
+             "que o pipeline envie sem perguntar (ex: rodando em script).",
+    )
     parser.add_argument(
         "--ask",
         action="store_true",
-        help="[TEMP] Antes de enviar cada email de pendência, mostra preview "
-             "e pergunta confirmação no terminal. Use durante calibração; "
-             "deve ser REMOVIDO em produção (incompatível com Task Scheduler).",
+        help="[TEMP/DEPRECATED] No-op — confirmação já é default. Mantido "
+             "pra compatibilidade com atalhos existentes.",
     )
     # ─── fim TEMP-CONFIRMAR-REPLIES ──────────────────────────────────
     args = parser.parse_args()
@@ -812,11 +829,24 @@ def main() -> int:
         return 1
 
     # ─── TEMP-CONFIRMAR-REPLIES (remover em produção) ────────────────
-    config.confirmar_replies = args.ask
-    if config.confirmar_replies:
+    # Resolução do modo confirmação:
+    #   1. --no-ask explícito → SEMPRE desliga
+    #   2. Sem TTY (Task Scheduler/redirect) → desliga automaticamente
+    #   3. Caso contrário → default LIGADO (configurado na Config)
+    if args.no_ask:
+        config.confirmar_replies = False
+        log.info("ℹ Confirmação interativa DESLIGADA por --no-ask")
+    elif not sys.stdin.isatty():
+        config.confirmar_replies = False
+        log.info(
+            "ℹ Sem TTY (provavelmente Task Scheduler) — "
+            "confirmação interativa DESLIGADA automaticamente"
+        )
+    else:
         log.warning(
-            "⚠ MODO --ask ATIVO: cada email de pendência exigirá confirmação "
-            "no terminal antes do envio."
+            "⚠ MODO CONFIRMAR ATIVO (default): cada email de pendência "
+            "exigirá confirmação no terminal antes do envio. "
+            "Use --no-ask pra desligar."
         )
     # ─── fim TEMP-CONFIRMAR-REPLIES ──────────────────────────────────
 
