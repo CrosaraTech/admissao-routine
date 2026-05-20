@@ -128,6 +128,20 @@ documentos ou no texto do email, RETORNE _pendente=true com motivo
 um CNPJ baseado em "parece que essa empresa..." — é melhor pendente
 do que CNPJ errado.
 
+## ENDEREÇO É OPCIONAL — NÃO MARQUE PENDENTE POR ISSO
+
+Apesar do briefing acima listar endereço (CEP, rua, bairro, cidade) como
+"recomendado", neste pipeline específico ele é OPCIONAL. A analista do DP
+preenche o endereço manualmente quando o cliente envia o comprovante.
+
+- Se o comprovante de endereço é ilegível (manuscrito ruim, foto borrada),
+  OMITA os campos de endereço — NÃO marque pendente.
+- Se nem houver comprovante de endereço anexado, OMITA — NÃO marque pendente.
+- Marcar _pendente=true por causa de endereço é ERRO. Os outros campos
+  essenciais (nome, CPF, admissão, salário, RG, CTPS, ASO) é que importam.
+
+Em resumo: pendente APENAS quando faltar essencial não-endereço.
+
 - Os IDs de `empresa`, `departamento` e `funcao` serão substituídos pelo
   pipeline depois — use placeholders "1" nesses 3 relationships.
 - Se faltarem dados essenciais (lista da seção 10 do briefing), OU se o

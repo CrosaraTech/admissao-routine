@@ -610,14 +610,56 @@ def processar_admissao(
     # 1. Claude — 1 chamada que pode devolver N admissões
     resposta_claude = claude.gerar_payload(corpo, metadados, anexos)
 
-    # 2. Claude marcou pendente total? Curto-circuita.
+    # 2. Claude marcou pendente total? Constrói resultado sintético com o
+    #    que conseguimos extrair de _dados_parciais e manda pro
+    #    _finalizar_lote — assim a planilha de admissões pega nome,
+    #    empresa e CNPJ (mesmo parciais) em vez de "? ? ?".
     if resposta_claude.get("_pendente"):
         motivo = resposta_claude.get("_motivo") or "Dados insuficientes"
-        _raise_pendencia(
-            f"Claude marcou como pendente: {motivo}",
-            motivo_cliente=motivo,
-            payload_parcial=resposta_claude,
+        dp = resposta_claude.get("_dados_parciais") or {}
+
+        # Extrai o que dá pra dar contexto na planilha
+        nome_extraido = next(
+            (str(dp.get(k)) for k in ("nome", "nome_completo", "funcionario")
+             if dp.get(k)),
+            None,
         )
+        razao_extraida = next(
+            (str(dp.get(k)) for k in (
+                "razao_social_empresa", "razao_social", "empresa", "nome_empresa",
+            ) if dp.get(k)),
+            None,
+        )
+        cnpj_extraido = (
+            dp.get("cnpj_empresa")
+            or resposta_claude.get("cnpj_empresa")
+            or ""
+        )
+
+        log.warning(
+            f"   ⚠ Claude marcou como pendente: {motivo}\n"
+            f"   📝 Registrando com dados parciais: nome={nome_extraido}, "
+            f"empresa={razao_extraida}, cnpj={cnpj_extraido}"
+        )
+
+        resultado_pendente = {
+            "indice": 1,
+            "nome": nome_extraido or "(nome não extraído)",
+            "ok": False,
+            "interno": False,  # vai pro cliente — falta info do lado dele
+            "candidato_id": None,
+            "erro_tecnico": f"Claude marcou como pendente: {motivo}",
+            "motivo_cliente": motivo,
+            "campos_faltando": [],
+            "payload_parcial": resposta_claude,
+            "razao_social": razao_extraida,
+            "cnpj_empresa": str(cnpj_extraido) if cnpj_extraido else "",
+        }
+        _finalizar_lote(
+            [resultado_pendente], msg_id, msg_pra_resposta,
+            ids_label_pendente_remover, gmail, config,
+        )
+        return
 
     # 3. Normaliza pra lista de blocos (1 ou N)
     blocos = normalizar_admissoes(resposta_claude)
