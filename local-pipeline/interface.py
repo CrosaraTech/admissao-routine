@@ -1,12 +1,14 @@
 """interface.py — GUI desktop pro pipeline de admissão (Tkinter).
 
-3 abas:
-  • Principal: status, controle (start/stop), toggle auto-email, log ao vivo
-  • Processadas: tabela de admissões já cadastradas
-  • Pendentes: tabela de admissões com pendência + botão "Resolver pendência"
+Visual com identidade da Crosara Contabilidade:
+  • Sidebar navy (#344E5C) com logo + nav
+  • Conteúdo em bege (#F4DDC8) com cards brancos
+  • Accent laranja (#D95C32) pra primary + active state
+  • Log "terminal" em navy escuro com timestamps em laranja
 
-Polling roda em thread separada; UI atualiza via fila thread-safe.
-Reaproveita toda a lógica do main.py (carregar_config, rodar_uma_passada, etc.).
+6 abas (sidebar): Principal · Processadas · Pendentes · Auditoria ·
+Estatísticas · Regras. Polling em thread separada, fila thread-safe
+pra atualizar a UI. Reaproveita toda a lógica do main.py.
 
 Uso:
     python interface.py
@@ -25,6 +27,37 @@ from tkinter import messagebox, scrolledtext, ttk
 
 from dotenv import load_dotenv
 load_dotenv()
+
+# ============================================================
+# Paleta de cores Crosara (extraída do Logotipo Crosara - CMYK-04.jpg)
+# ============================================================
+
+COR_NAVY = "#344E5C"          # sidebar, header dark, log terminal
+COR_NAVY_DARK = "#2A4050"     # log slightly darker
+COR_NAVY_HOVER = "#3F5C6E"    # nav button hover
+COR_NAVY_ACTIVE = "#2A4050"   # nav button when active (não usado, vai laranja)
+COR_BEIGE = "#F4DDC8"         # main background
+COR_BEIGE_DARK = "#E8C9AE"    # subtle differentiation
+COR_WHITE = "#FFFFFF"          # cards
+COR_ORANGE = "#D95C32"        # accent / primary / active nav
+COR_ORANGE_DARK = "#B84A24"   # primary button hover
+COR_TEXT_DARK = "#2A4050"     # text on light bg
+COR_TEXT_LIGHT = "#F4DDC8"    # text on dark bg (matches beige)
+COR_TEXT_MUTED = "#7A8896"    # muted/secondary text
+COR_BORDER = "#D8C5AE"        # subtle border on cards
+COR_SUCCESS = "#2E7D32"       # contador processadas (verde)
+COR_WARNING = "#D95C32"       # contador pendentes (laranja Crosara)
+COR_DANGER = "#C62828"        # contador >3d (vermelho)
+COR_INFO = "#1565C0"          # custo claude (azul)
+
+# Pillow opcional (logo na sidebar)
+try:
+    from PIL import Image, ImageTk
+    _HAS_PIL = True
+except ImportError:
+    _HAS_PIL = False
+
+LOGO_PATH = Path(__file__).parent / "Logotipo Crosara - CMYK-04.jpg"
 
 from claude_client import ClaudeClient
 from ecotador_client import EContadorAPI
@@ -115,7 +148,9 @@ class PipelineGUI(tk.Tk):
         self.gui_q: queue.Queue = queue.Queue()
 
         # Tk vars
-        self.status_var = tk.StringVar(value="⏸ Parado")
+        self.status_var = tk.StringVar(value="Parado")
+        # Quando status muda, atualiza cor do dot da pill (verde/laranja/cinza)
+        self.status_var.trace_add("write", lambda *a: self._atualizar_status_dot())
         self.ultima_var = tk.StringVar(value="—")
         self.proxima_var = tk.StringVar(value="—")
         self.auto_email_var = tk.BooleanVar(value=self.config.auto_email_pendencias)
@@ -123,7 +158,7 @@ class PipelineGUI(tk.Tk):
         self.contador_proc_var = tk.StringVar(value="0")
         self.contador_pend_var = tk.StringVar(value="0")
         self.contador_velha_var = tk.StringVar(value="0")
-        self.billing_var = tk.StringVar(value="US$ 0.0000 / mês")
+        self.billing_var = tk.StringVar(value="US$ 0.00")
         # Limite mensal de billing pra alerta visual (default 50 USD)
         self.billing_limite_usd = 50.0
         # Filtros de busca por tab
@@ -144,22 +179,40 @@ class PipelineGUI(tk.Tk):
     # ---- Construção das abas -----------------------------------
 
     def _build_ui(self):
-        self.notebook = ttk.Notebook(self)
-        self.notebook.pack(fill="both", expand=True, padx=10, pady=10)
+        self._aplicar_tema_crosara()
+        self.configure(background=COR_BEIGE)
 
-        self.tab_main = ttk.Frame(self.notebook)
-        self.tab_proc = ttk.Frame(self.notebook)
-        self.tab_pend = ttk.Frame(self.notebook)
-        self.tab_audit = ttk.Frame(self.notebook)
-        self.tab_stats = ttk.Frame(self.notebook)
-        self.tab_regras = ttk.Frame(self.notebook)
+        # Layout: sidebar | (header + content)
+        container = tk.Frame(self, bg=COR_BEIGE)
+        container.pack(fill="both", expand=True)
 
-        self.notebook.add(self.tab_main, text="🏠  Principal")
-        self.notebook.add(self.tab_proc, text="✅  Processadas")
-        self.notebook.add(self.tab_pend, text="⚠  Pendentes")
-        self.notebook.add(self.tab_audit, text="📜  Auditoria")
-        self.notebook.add(self.tab_stats, text="📈  Estatísticas")
-        self.notebook.add(self.tab_regras, text="⚙  Regras")
+        self._build_sidebar(container)
+
+        # Área direita (header + conteúdo)
+        right = tk.Frame(container, bg=COR_BEIGE)
+        right.pack(side="left", fill="both", expand=True)
+        self._build_header(right)
+
+        # Holder do conteúdo (swap entre tabs)
+        self.content_holder = tk.Frame(right, bg=COR_BEIGE)
+        self.content_holder.pack(fill="both", expand=True, padx=20, pady=(0, 20))
+
+        # Frames de cada "aba" (sem Notebook — sidebar nav controla)
+        self.tab_main = tk.Frame(self.content_holder, bg=COR_BEIGE)
+        self.tab_proc = tk.Frame(self.content_holder, bg=COR_BEIGE)
+        self.tab_pend = tk.Frame(self.content_holder, bg=COR_BEIGE)
+        self.tab_audit = tk.Frame(self.content_holder, bg=COR_BEIGE)
+        self.tab_stats = tk.Frame(self.content_holder, bg=COR_BEIGE)
+        self.tab_regras = tk.Frame(self.content_holder, bg=COR_BEIGE)
+
+        self._tab_frames = {
+            "principal":   self.tab_main,
+            "processadas": self.tab_proc,
+            "pendentes":   self.tab_pend,
+            "auditoria":   self.tab_audit,
+            "estatisticas": self.tab_stats,
+            "regras":      self.tab_regras,
+        }
 
         self._build_main()
         self._build_processadas()
@@ -168,87 +221,280 @@ class PipelineGUI(tk.Tk):
         self._build_estatisticas()
         self._build_regras()
 
+        # Mostra Principal por padrão
+        self._switch_tab("principal")
+
+    def _aplicar_tema_crosara(self):
+        """Configura ttk.Style com a paleta da marca."""
+        style = ttk.Style()
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+
+        # Frame, Label
+        style.configure("TFrame", background=COR_BEIGE)
+        style.configure("TLabel", background=COR_BEIGE, foreground=COR_TEXT_DARK)
+        style.configure("TLabelframe", background=COR_BEIGE, foreground=COR_TEXT_DARK,
+                        bordercolor=COR_BORDER, relief="solid")
+        style.configure("TLabelframe.Label", background=COR_BEIGE, foreground=COR_TEXT_DARK)
+
+        # Cards (frames brancos)
+        style.configure("Card.TFrame", background=COR_WHITE, relief="solid", borderwidth=1)
+        style.configure("Card.TLabel", background=COR_WHITE, foreground=COR_TEXT_DARK)
+
+        # Buttons
+        style.configure("TButton", background=COR_WHITE, foreground=COR_TEXT_DARK,
+                        padding=8, borderwidth=1, focusthickness=0)
+        style.map("TButton",
+                  background=[("active", COR_BEIGE_DARK)],
+                  foreground=[("active", COR_TEXT_DARK)])
+
+        # Primary button (laranja)
+        style.configure("Primary.TButton", background=COR_ORANGE, foreground=COR_WHITE,
+                        padding=10, borderwidth=0, font=("Segoe UI", 10, "bold"))
+        style.map("Primary.TButton",
+                  background=[("active", COR_ORANGE_DARK), ("disabled", "#C9C9C9")],
+                  foreground=[("disabled", "#888")])
+
+        # Treeview
+        style.configure("Treeview",
+                        background=COR_WHITE, fieldbackground=COR_WHITE,
+                        foreground=COR_TEXT_DARK, rowheight=26, bordercolor=COR_BORDER)
+        style.configure("Treeview.Heading",
+                        background=COR_NAVY, foreground=COR_WHITE,
+                        font=("Segoe UI", 9, "bold"), padding=5, relief="flat")
+        style.map("Treeview",
+                  background=[("selected", COR_ORANGE)],
+                  foreground=[("selected", COR_WHITE)])
+
+        # Entry, Combobox, Spinbox
+        for w in ("TEntry", "TCombobox", "TSpinbox"):
+            style.configure(w, fieldbackground=COR_WHITE, foreground=COR_TEXT_DARK,
+                            bordercolor=COR_BORDER, relief="solid")
+
+        # Notebook (usado só no ResolverPendenciaDialog)
+        style.configure("TNotebook", background=COR_BEIGE, borderwidth=0)
+        style.configure("TNotebook.Tab", background=COR_BEIGE_DARK, foreground=COR_TEXT_DARK,
+                        padding=(12, 6))
+        style.map("TNotebook.Tab",
+                  background=[("selected", COR_WHITE)],
+                  foreground=[("selected", COR_TEXT_DARK)])
+
+        # Checkbutton, Scrollbar
+        style.configure("TCheckbutton", background=COR_BEIGE, foreground=COR_TEXT_DARK)
+        style.configure("TScrollbar", background=COR_BEIGE, troughcolor=COR_BEIGE_DARK,
+                        bordercolor=COR_BEIGE_DARK, arrowcolor=COR_NAVY)
+
+    def _build_sidebar(self, parent: tk.Frame):
+        side = tk.Frame(parent, bg=COR_NAVY, width=230)
+        side.pack(side="left", fill="y")
+        side.pack_propagate(False)
+
+        # Logo header
+        header = tk.Frame(side, bg=COR_NAVY, height=90)
+        header.pack(fill="x", pady=(20, 30), padx=15)
+        header.pack_propagate(False)
+
+        logo_img = self._carregar_logo_sidebar()
+        if logo_img:
+            self._logo_ref = logo_img  # evita garbage collect
+            tk.Label(header, image=logo_img, bg=COR_NAVY).pack(side="left", padx=(0, 8))
+            txt_frame = tk.Frame(header, bg=COR_NAVY)
+            txt_frame.pack(side="left", anchor="center")
+            tk.Label(txt_frame, text="CROSARA", bg=COR_NAVY, fg=COR_TEXT_LIGHT,
+                     font=("Segoe UI", 14, "bold")).pack(anchor="w")
+            tk.Label(txt_frame, text="CONTABILIDADE", bg=COR_NAVY, fg=COR_ORANGE,
+                     font=("Segoe UI", 8, "bold")).pack(anchor="w")
+        else:
+            # Fallback texto
+            tk.Label(header, text="CROSARA", bg=COR_NAVY, fg=COR_TEXT_LIGHT,
+                     font=("Segoe UI", 18, "bold")).pack(anchor="w")
+            tk.Label(header, text="CONTABILIDADE", bg=COR_NAVY, fg=COR_ORANGE,
+                     font=("Segoe UI", 9, "bold")).pack(anchor="w")
+
+        # Nav buttons
+        self._nav_buttons: dict[str, tk.Button] = {}
+        nav_items = [
+            ("principal",   "Principal"),
+            ("processadas", "Processadas"),
+            ("pendentes",   "Pendentes"),
+            ("auditoria",   "Auditoria"),
+            ("estatisticas", "Estatísticas"),
+            ("regras",      "Regras"),
+        ]
+        for key, label in nav_items:
+            btn = tk.Button(
+                side, text=f"   {label}", anchor="w",
+                bg=COR_NAVY, fg=COR_TEXT_LIGHT,
+                activebackground=COR_NAVY_HOVER, activeforeground=COR_WHITE,
+                bd=0, relief="flat", padx=20, pady=10,
+                font=("Segoe UI", 11),
+                cursor="hand2",
+                command=lambda k=key: self._switch_tab(k),
+            )
+            btn.pack(fill="x", padx=10, pady=2)
+            self._nav_buttons[key] = btn
+
+    def _carregar_logo_sidebar(self):
+        if not _HAS_PIL or not LOGO_PATH.exists():
+            return None
+        try:
+            img = Image.open(LOGO_PATH)
+            w, h = img.size
+            target_h = 50
+            new_w = int(w * target_h / h)
+            img = img.resize((new_w, target_h), Image.LANCZOS)
+            return ImageTk.PhotoImage(img)
+        except Exception:
+            return None
+
+    def _build_header(self, parent: tk.Frame):
+        header = tk.Frame(parent, bg=COR_BEIGE, height=70)
+        header.pack(fill="x", padx=20, pady=(20, 10))
+        header.pack_propagate(False)
+
+        self._titulo_var = tk.StringVar(value="Pipeline de Admissão")
+        tk.Label(header, textvariable=self._titulo_var, bg=COR_BEIGE,
+                 fg=COR_TEXT_DARK, font=("Segoe UI", 20, "bold")).pack(side="left")
+
+        # Status pill à direita
+        self._status_pill = tk.Frame(header, bg=COR_WHITE, padx=15, pady=6, bd=1, relief="solid")
+        self._status_pill.pack(side="right", pady=10)
+        self._status_dot = tk.Label(self._status_pill, text="●", bg=COR_WHITE,
+                                    fg="#888", font=("Segoe UI", 14))
+        self._status_dot.pack(side="left", padx=(0, 6))
+        tk.Label(self._status_pill, textvariable=self.status_var, bg=COR_WHITE,
+                 fg=COR_TEXT_DARK, font=("Segoe UI", 10, "bold")).pack(side="left")
+
+    def _switch_tab(self, name: str):
+        """Mostra o frame da tab `name`, esconde os outros, destaca o botão."""
+        for n, f in self._tab_frames.items():
+            if n == name:
+                f.pack(fill="both", expand=True)
+            else:
+                f.pack_forget()
+
+        # Update sidebar — botão ativo em laranja
+        for k, btn in self._nav_buttons.items():
+            if k == name:
+                btn.configure(bg=COR_ORANGE, fg=COR_WHITE,
+                              activebackground=COR_ORANGE_DARK,
+                              activeforeground=COR_WHITE)
+            else:
+                btn.configure(bg=COR_NAVY, fg=COR_TEXT_LIGHT,
+                              activebackground=COR_NAVY_HOVER,
+                              activeforeground=COR_WHITE)
+
+        # Update title
+        titulos = {
+            "principal": "Pipeline de Admissão",
+            "processadas": "Admissões Processadas",
+            "pendentes": "Admissões Pendentes",
+            "auditoria": "Auditoria",
+            "estatisticas": "Estatísticas",
+            "regras": "Regras de Negócio",
+        }
+        self._titulo_var.set(titulos.get(name, "Pipeline"))
+
     def _build_main(self):
-        # Linha 1 — Status (grande)
-        f_status = ttk.LabelFrame(self.tab_main, text="Status do Pipeline", padding=12)
-        f_status.pack(fill="x", padx=15, pady=(15, 10))
+        # Stats: 4 cards lado a lado
+        stats_row = tk.Frame(self.tab_main, bg=COR_BEIGE)
+        stats_row.pack(fill="x", pady=(10, 15))
 
-        grid = ttk.Frame(f_status)
-        grid.pack(fill="x")
-        ttk.Label(grid, text="Estado:", font=("Segoe UI", 10)).grid(row=0, column=0, sticky="w", padx=(0, 10))
-        ttk.Label(grid, textvariable=self.status_var, font=("Segoe UI", 14, "bold"),
-                  foreground="#0066cc").grid(row=0, column=1, sticky="w", columnspan=3)
-        ttk.Label(grid, text="Última passada:").grid(row=1, column=0, sticky="w", padx=(0, 10), pady=(10, 0))
-        ttk.Label(grid, textvariable=self.ultima_var).grid(row=1, column=1, sticky="w", pady=(10, 0))
-        ttk.Label(grid, text="Próxima passada:").grid(row=1, column=2, sticky="w", padx=(30, 10), pady=(10, 0))
-        ttk.Label(grid, textvariable=self.proxima_var).grid(row=1, column=3, sticky="w", pady=(10, 0))
+        self._card_stat(stats_row, "Processadas", self.contador_proc_var, COR_SUCCESS).pack(
+            side="left", fill="both", expand=True, padx=(0, 10))
+        self._card_stat(stats_row, "Pendentes", self.contador_pend_var, COR_WARNING).pack(
+            side="left", fill="both", expand=True, padx=10)
+        self._card_stat(stats_row, f"Pendência >{DIAS_PENDENCIA_VELHA}d",
+                        self.contador_velha_var, COR_DANGER).pack(
+            side="left", fill="both", expand=True, padx=10)
+        billing_card = self._card_stat(stats_row, "Custo Claude/mês",
+                                       self.billing_var, COR_INFO, valor_font_size=18)
+        billing_card.pack(side="left", fill="both", expand=True, padx=(10, 0))
+        # Referência pro label de valor pra mudar cor (alerta de limite)
+        self.billing_label = billing_card._valor_label  # set dentro de _card_stat
 
-        # Linha 2 — Contadores rápidos
-        f_cnt = ttk.Frame(self.tab_main)
-        f_cnt.pack(fill="x", padx=15, pady=5)
-        ttk.Label(f_cnt, text="✅ Processadas: ").pack(side="left")
-        ttk.Label(f_cnt, textvariable=self.contador_proc_var, font=("Segoe UI", 11, "bold"),
-                  foreground="#2e7d32").pack(side="left", padx=(0, 25))
-        ttk.Label(f_cnt, text="⚠ Pendentes: ").pack(side="left")
-        ttk.Label(f_cnt, textvariable=self.contador_pend_var, font=("Segoe UI", 11, "bold"),
-                  foreground="#c62828").pack(side="left", padx=(0, 25))
-        ttk.Label(f_cnt, text=f"🕒 Pendência >{DIAS_PENDENCIA_VELHA}d: ").pack(side="left")
-        ttk.Label(f_cnt, textvariable=self.contador_velha_var, font=("Segoe UI", 11, "bold"),
-                  foreground="#e65100").pack(side="left", padx=(0, 25))
-        ttk.Label(f_cnt, text="💰 Custo Claude: ").pack(side="left")
-        self.billing_label = ttk.Label(
-            f_cnt, textvariable=self.billing_var, font=("Segoe UI", 11, "bold"),
-            foreground="#1565c0",
-        )
-        self.billing_label.pack(side="left")
+        # Controle (card branco)
+        f_ctrl_card = tk.Frame(self.tab_main, bg=COR_WHITE, bd=1, relief="solid",
+                                highlightbackground=COR_BORDER, highlightthickness=0)
+        f_ctrl_card.pack(fill="x", pady=10)
+        tk.Label(f_ctrl_card, text="Controle", bg=COR_WHITE, fg=COR_TEXT_DARK,
+                 font=("Segoe UI", 11, "bold")).pack(anchor="w", padx=15, pady=(12, 8))
 
-        # Linha 3 — Controles
-        f_ctrl = ttk.LabelFrame(self.tab_main, text="Controle", padding=12)
-        f_ctrl.pack(fill="x", padx=15, pady=10)
+        row1 = tk.Frame(f_ctrl_card, bg=COR_WHITE)
+        row1.pack(fill="x", padx=15, pady=(0, 6))
+        self.btn_iniciar = ttk.Button(row1, text="Iniciar polling",
+                                       style="Primary.TButton",
+                                       command=self._iniciar_polling)
+        self.btn_iniciar.pack(side="left", padx=(0, 8))
+        self.btn_parar = ttk.Button(row1, text="Parar",
+                                     command=self._parar_polling, state="disabled")
+        self.btn_parar.pack(side="left", padx=8)
+        ttk.Button(row1, text="Rodar 1 passada", command=self._rodar_unica).pack(side="left", padx=8)
 
-        self.btn_iniciar = ttk.Button(f_ctrl, text="▶  Iniciar polling", command=self._iniciar_polling)
-        self.btn_iniciar.pack(side="left", padx=5)
-        self.btn_parar = ttk.Button(f_ctrl, text="⏸  Parar", command=self._parar_polling, state="disabled")
-        self.btn_parar.pack(side="left", padx=5)
-        ttk.Button(f_ctrl, text="🔄  Rodar 1 passada agora", command=self._rodar_unica).pack(side="left", padx=5)
-        ttk.Button(f_ctrl, text="📊  Atualizar tabelas", command=self._refresh_tabelas).pack(side="left", padx=5)
-        ttk.Button(f_ctrl, text="💾  Backup agora", command=self._backup_agora).pack(side="left", padx=5)
+        row2 = tk.Frame(f_ctrl_card, bg=COR_WHITE)
+        row2.pack(fill="x", padx=15, pady=(0, 12))
+        ttk.Button(row2, text="Backup agora", command=self._backup_agora).pack(side="left", padx=(0, 8))
+        ttk.Button(row2, text="Atualizar tabelas", command=self._refresh_tabelas).pack(side="left", padx=8)
 
-        # Linha 4 — Configurações
-        f_set = ttk.LabelFrame(self.tab_main, text="Configurações", padding=12)
-        f_set.pack(fill="x", padx=15, pady=10)
+        # Configurações (card)
+        f_set = tk.Frame(self.tab_main, bg=COR_WHITE, bd=1, relief="solid")
+        f_set.pack(fill="x", pady=10)
+        tk.Label(f_set, text="Configurações", bg=COR_WHITE, fg=COR_TEXT_DARK,
+                 font=("Segoe UI", 11, "bold")).pack(anchor="w", padx=15, pady=(12, 8))
 
         ttk.Checkbutton(
             f_set,
             text="Enviar email de pendência automaticamente pro cliente "
-                 "(APENAS pra campos externos como salário, ASO, CPF — "
-                 "pendências internas SEMPRE são resolvidas manualmente)",
+                 "(APENAS pra campos externos — internas sempre manuais)",
             variable=self.auto_email_var,
             command=self._on_auto_email_change,
-        ).pack(anchor="w", pady=3)
+        ).pack(anchor="w", padx=15, pady=3)
 
-        intv = ttk.Frame(f_set)
-        intv.pack(anchor="w", pady=(8, 0))
-        ttk.Label(intv, text="Intervalo de polling (segundos):").pack(side="left")
+        intv = tk.Frame(f_set, bg=COR_WHITE)
+        intv.pack(anchor="w", padx=15, pady=(8, 0))
+        tk.Label(intv, text="Intervalo de polling (segundos):",
+                 bg=COR_WHITE, fg=COR_TEXT_DARK).pack(side="left")
         ttk.Spinbox(intv, from_=60, to=3600, increment=30,
                     textvariable=self.intervalo_var, width=8).pack(side="left", padx=8)
-        ttk.Label(intv, text="(default 300 = 5 minutos)").pack(side="left")
+        tk.Label(intv, text="(default 300 = 5 minutos)",
+                 bg=COR_WHITE, fg=COR_TEXT_MUTED, font=("Segoe UI", 8)).pack(side="left")
 
-        # Dark mode toggle
         ttk.Checkbutton(
-            f_set, text="🌙  Modo escuro",
+            f_set, text="Modo escuro",
             variable=self.dark_mode_var,
             command=self._toggle_dark_mode,
-        ).pack(anchor="w", pady=(8, 0))
+        ).pack(anchor="w", padx=15, pady=(8, 12))
 
-        # Linha 5 — Log
-        f_log = ttk.LabelFrame(self.tab_main, text="Atividade recente", padding=8)
-        f_log.pack(fill="both", expand=True, padx=15, pady=(10, 15))
-        self.log_text = scrolledtext.ScrolledText(
-            f_log, height=14, font=("Consolas", 9), state="disabled",
-            background="#1e1e1e", foreground="#d4d4d4",
+        # Atividade recente (log) — terminal style com brand colors
+        f_log_card = tk.Frame(self.tab_main, bg=COR_NAVY_DARK, bd=0)
+        f_log_card.pack(fill="both", expand=True, pady=(10, 0))
+        tk.Label(f_log_card, text="Atividade recente",
+                 bg=COR_NAVY_DARK, fg=COR_TEXT_MUTED,
+                 font=("Segoe UI", 10)).pack(anchor="w", padx=15, pady=(10, 5))
+
+        self.log_text = tk.Text(
+            f_log_card, height=14, font=("Consolas", 10),
+            bg=COR_NAVY_DARK, fg=COR_BEIGE, bd=0, padx=15, pady=10,
+            insertbackground=COR_BEIGE, wrap="word",
+            state="disabled",
         )
-        self.log_text.pack(fill="both", expand=True)
+        self.log_text.pack(fill="both", expand=True, padx=0, pady=(0, 10))
+        # Tag pra colorir timestamps em laranja
+        self.log_text.tag_configure("ts", foreground=COR_ORANGE)
+
+    def _card_stat(self, parent, titulo, var_valor, cor_valor, valor_font_size=28):
+        """Cria um card branco com título cinza e valor grande colorido."""
+        card = tk.Frame(parent, bg=COR_WHITE, bd=1, relief="solid",
+                        highlightbackground=COR_BORDER, highlightthickness=0)
+        tk.Label(card, text=titulo, bg=COR_WHITE, fg=COR_TEXT_MUTED,
+                 font=("Segoe UI", 10)).pack(anchor="w", padx=18, pady=(15, 4))
+        lbl = tk.Label(card, textvariable=var_valor, bg=COR_WHITE, fg=cor_valor,
+                       font=("Segoe UI", valor_font_size, "bold"))
+        lbl.pack(anchor="w", padx=18, pady=(0, 15))
+        card._valor_label = lbl  # pra alterar cor depois (alerta billing)
+        return card
 
     def _build_processadas(self):
         f = ttk.Frame(self.tab_proc)
@@ -359,11 +605,11 @@ class PipelineGUI(tk.Tk):
 
     def _append_log(self, msg: str):
         ts = datetime.now().strftime("%H:%M:%S")
-        line = f"[{ts}] {msg}\n"
         self.log_text.configure(state="normal")
-        self.log_text.insert("end", line)
+        # Timestamp em laranja, resto em bege
+        self.log_text.insert("end", f"[{ts}] ", ("ts",))
+        self.log_text.insert("end", f"{msg}\n")
         self.log_text.see("end")
-        # Limita a ~1000 linhas pra não inchar
         n_lines = int(self.log_text.index("end-1c").split(".")[0])
         if n_lines > 1000:
             self.log_text.delete("1.0", "500.0")
@@ -388,8 +634,8 @@ class PipelineGUI(tk.Tk):
         self.polling = False
         self.btn_parar.configure(state="disabled")
         self.btn_iniciar.configure(state="normal")
-        self.gui_q.put(("status", "⏸ Parando..."))
-        self.gui_q.put(("log", "⏸ Pedido de parada — vai parar após a passada atual"))
+        self.gui_q.put(("status", "Parando..."))
+        self.gui_q.put(("log", "Pedido de parada — vai parar após a passada atual"))
 
     def _rodar_unica(self):
         if self.polling:
@@ -399,41 +645,40 @@ class PipelineGUI(tk.Tk):
         threading.Thread(target=self._executar_passada, daemon=True).start()
 
     def _executar_passada(self):
-        self.gui_q.put(("status", "⚙ Executando..."))
-        self.gui_q.put(("log", "▶ Iniciando passada única..."))
+        self.gui_q.put(("status", "Executando..."))
+        self.gui_q.put(("log", "Iniciando passada única..."))
         try:
             rodar_uma_passada(self.config, self.claude, self.planilha)
-            self.gui_q.put(("log", "✓ Passada única concluída"))
+            self.gui_q.put(("log", "Passada única concluída"))
         except Exception as e:
-            self.gui_q.put(("log", f"❌ Erro na passada: {e}"))
-        self.gui_q.put(("status", "⏸ Parado"))
+            self.gui_q.put(("log", f"Erro na passada: {e}"))
+        self.gui_q.put(("status", "Parado"))
         self.gui_q.put(("ultima", datetime.now().strftime("%d/%m/%Y %H:%M:%S")))
         self.gui_q.put(("refresh", None))
 
     def _loop_polling(self):
         while self.polling:
-            self.gui_q.put(("status", "⚙ Executando passada..."))
-            self.gui_q.put(("log", "▶ Iniciando passada..."))
+            self.gui_q.put(("status", "Executando passada..."))
+            self.gui_q.put(("log", "Iniciando passada..."))
             try:
                 rodar_uma_passada(self.config, self.claude, self.planilha)
-                self.gui_q.put(("log", "✓ Passada concluída"))
+                self.gui_q.put(("log", "Passada concluída"))
             except Exception as e:
-                self.gui_q.put(("log", f"❌ Erro na passada: {e}"))
+                self.gui_q.put(("log", f"Erro na passada: {e}"))
 
             self.gui_q.put(("ultima", datetime.now().strftime("%d/%m/%Y %H:%M:%S")))
             self.gui_q.put(("refresh", None))
 
-            # Sleep com checks periódicos pra status + parada
             t_end = time.time() + self.config.intervalo
             while time.time() < t_end and self.polling:
                 t_left = int(t_end - time.time())
-                self.gui_q.put(("status", f"⏱ Aguardando próxima ({t_left}s)"))
+                self.gui_q.put(("status", f"Aguardando próxima ({t_left}s)"))
                 self.gui_q.put(("proxima", datetime.fromtimestamp(t_end).strftime("%H:%M:%S")))
                 time.sleep(1)
 
-        self.gui_q.put(("status", "⏸ Parado"))
+        self.gui_q.put(("status", "Parado"))
         self.gui_q.put(("proxima", "—"))
-        self.gui_q.put(("log", "⏹ Polling parado"))
+        self.gui_q.put(("log", "Polling parado"))
 
     def _on_auto_email_change(self):
         self.config.auto_email_pendencias = bool(self.auto_email_var.get())
@@ -619,10 +864,8 @@ class PipelineGUI(tk.Tk):
         try:
             resumo = sum_billing_mes_atual()
             custo = resumo["custo_usd"]
-            self.billing_var.set(
-                f"US$ {custo:.4f} / mês "
-                f"({resumo['n_calls']} chamadas, {resumo['n_passadas']} passadas)"
-            )
+            # Compacto pro card (no painel Estatísticas mostra os detalhes)
+            self.billing_var.set(f"US$ {custo:.2f}")
             # Cor: verde < 50% limite, laranja 50-100%, vermelho > 100%
             if custo >= self.billing_limite_usd:
                 self.billing_label.configure(foreground="#c62828")
@@ -965,6 +1208,18 @@ class PipelineGUI(tk.Tk):
                                 "Reinicie o pipeline pra que mudanças entrem em vigor.")
         except Exception as e:
             messagebox.showerror("Erro salvando", str(e))
+
+    def _atualizar_status_dot(self):
+        """Cor do dot da pill: verde rodando, laranja aguardando, cinza parado."""
+        if not hasattr(self, "_status_dot"):
+            return
+        s = (self.status_var.get() or "").lower()
+        if "executando" in s or "rodando" in s:
+            self._status_dot.configure(fg=COR_SUCCESS)
+        elif "aguard" in s or "próxima" in s or "parando" in s:
+            self._status_dot.configure(fg=COR_ORANGE)
+        else:
+            self._status_dot.configure(fg="#888")
 
     # ---- Toast notification + dark mode -------------------------
 
