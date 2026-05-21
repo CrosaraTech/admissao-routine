@@ -6,3 +6,5 @@ google-auth-oauthlib>=1.2.0
 google-auth-httplib2>=0.2.0
 google-api-python-client>=2.140.0
 openpyxl>=3.1.0
+# Opcional: notificações Windows toast (se faltar, fallback pra popup Tk)
+plyer>=2.1.0

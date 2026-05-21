@@ -30,16 +30,39 @@ from claude_client import ClaudeClient
 from ecotador_client import EContadorAPI
 from gmail_client import GmailClient
 from main import (
-    PAYLOADS_DIR, PLANILHA_ADMISSOES, PLANILHA_CBO,
+    PAYLOADS_DIR, PLANILHA_ADMISSOES, PLANILHA_CBO, REGRAS_FILE,
     bootstrap_arquivos_locais, carregar_config, carregar_planilha,
     carregar_regras, fazer_backup_planilha_e_payloads,
     registrar_admissao_planilha, rodar_uma_passada,
     sum_billing_mes_atual,
 )
+from payload_builder import LABELS_AMIGAVEIS
+
+# Toast Windows (opcional — fallback pra popup Tk se plyer não instalado)
+try:
+    from plyer import notification as _plyer_notif  # noqa
+    _HAS_PLYER = True
+except ImportError:
+    _HAS_PLYER = False
 
 
 # Dias após os quais uma pendência é considerada "velha" → highlight visual
 DIAS_PENDENCIA_VELHA = 3
+
+# Map reverso: label amigável → chave do attribute no payload
+# (usado pelo form estruturado de resolver pendência)
+LABEL_PRA_ATTR = {v: k for k, v in LABELS_AMIGAVEIS.items()}
+
+# Hints de preenchimento por tipo de campo
+HINTS_FORM = {
+    "admissao": "YYYY-MM-DD (ex: 2026-06-15)",
+    "nascimento": "YYYY-MM-DD (ex: 1990-03-12)",
+    "dataatestadoocupacional": "YYYY-MM-DD (ex: 2026-06-10)",
+    "salario": "Número decimal (ex: 1722.25)",
+    "cpf": "Apenas dígitos (ex: 12345678901)",
+    "diascontratoexperiencia": "Inteiro (default 30)",
+    "primeiroemprego": "true ou false",
+}
 
 
 # ============================================================
@@ -106,8 +129,17 @@ class PipelineGUI(tk.Tk):
         # Filtros de busca por tab
         self.filtro_proc_var = tk.StringVar()
         self.filtro_pend_var = tk.StringVar()
+        self.filtro_audit_var = tk.StringVar()
         self.filtro_proc_var.trace_add("write", lambda *a: self._refresh_tabelas())
         self.filtro_pend_var.trace_add("write", lambda *a: self._refresh_tabelas())
+        self.filtro_audit_var.trace_add("write", lambda *a: self._refresh_auditoria())
+
+        # Tracking pra disparar toast quando chega pendência nova
+        self._msg_ids_pendentes_conhecidos: set[str] = set()
+        self._primeira_carga = True
+
+        # Dark mode (afeta log + treeviews + algumas frames)
+        self.dark_mode_var = tk.BooleanVar(value=False)
 
     # ---- Construção das abas -----------------------------------
 
@@ -118,14 +150,23 @@ class PipelineGUI(tk.Tk):
         self.tab_main = ttk.Frame(self.notebook)
         self.tab_proc = ttk.Frame(self.notebook)
         self.tab_pend = ttk.Frame(self.notebook)
+        self.tab_audit = ttk.Frame(self.notebook)
+        self.tab_stats = ttk.Frame(self.notebook)
+        self.tab_regras = ttk.Frame(self.notebook)
 
         self.notebook.add(self.tab_main, text="🏠  Principal")
         self.notebook.add(self.tab_proc, text="✅  Processadas")
         self.notebook.add(self.tab_pend, text="⚠  Pendentes")
+        self.notebook.add(self.tab_audit, text="📜  Auditoria")
+        self.notebook.add(self.tab_stats, text="📈  Estatísticas")
+        self.notebook.add(self.tab_regras, text="⚙  Regras")
 
         self._build_main()
         self._build_processadas()
         self._build_pendentes()
+        self._build_auditoria()
+        self._build_estatisticas()
+        self._build_regras()
 
     def _build_main(self):
         # Linha 1 — Status (grande)
@@ -192,6 +233,13 @@ class PipelineGUI(tk.Tk):
         ttk.Spinbox(intv, from_=60, to=3600, increment=30,
                     textvariable=self.intervalo_var, width=8).pack(side="left", padx=8)
         ttk.Label(intv, text="(default 300 = 5 minutos)").pack(side="left")
+
+        # Dark mode toggle
+        ttk.Checkbutton(
+            f_set, text="🌙  Modo escuro",
+            variable=self.dark_mode_var,
+            command=self._toggle_dark_mode,
+        ).pack(anchor="w", pady=(8, 0))
 
         # Linha 5 — Log
         f_log = ttk.LabelFrame(self.tab_main, text="Atividade recente", padding=8)
@@ -496,8 +544,75 @@ class PipelineGUI(tk.Tk):
             self.contador_proc_var.set(str(n_proc))
             self.contador_pend_var.set(str(n_pend))
             self.contador_velha_var.set(str(n_velha))
+
+            # Detecta pendências NOVAS (não vistas antes nessa sessão) e dispara toast
+            try:
+                ids_atuais = self._coletar_msg_ids_pendentes()
+                if self._primeira_carga:
+                    self._msg_ids_pendentes_conhecidos = ids_atuais
+                    self._primeira_carga = False
+                else:
+                    novas = ids_atuais - self._msg_ids_pendentes_conhecidos
+                    if novas:
+                        self._notify_toast(
+                            "⚠ Nova pendência",
+                            f"{len(novas)} nova(s) admissão(ões) pendente(s) na fila.\n"
+                            f"Veja na aba Pendentes.",
+                        )
+                    self._msg_ids_pendentes_conhecidos = ids_atuais
+            except Exception:
+                pass
+
+            # Alerta de billing — toast quando passar do limite
+            if hasattr(self, "_billing_alertou_dessa_sessao"):
+                pass
+            else:
+                self._billing_alertou_dessa_sessao = False
+            b = sum_billing_mes_atual()
+            if (
+                b["custo_usd"] >= self.billing_limite_usd
+                and not self._billing_alertou_dessa_sessao
+            ):
+                self._notify_toast(
+                    "💰 Limite de billing atingido",
+                    f"O custo da API Claude no mês corrente passou de US$ "
+                    f"{self.billing_limite_usd:.2f} (atual: US$ {b['custo_usd']:.4f}).",
+                )
+                self._billing_alertou_dessa_sessao = True
+
+            # Atualiza outras tabs também
+            if hasattr(self, "tree_audit"):
+                self._refresh_auditoria()
+            if hasattr(self, "stats_text"):
+                self._refresh_estatisticas()
         except Exception as e:
             self.gui_q.put(("log", f"⚠ Erro lendo planilha: {e}"))
+
+    def _coletar_msg_ids_pendentes(self) -> set[str]:
+        """Conjunto de msg_ids que estão como pendência na planilha agora."""
+        ids = set()
+        if not PLANILHA_ADMISSOES.exists():
+            return ids
+        try:
+            from openpyxl import load_workbook
+            wb = load_workbook(PLANILHA_ADMISSOES, read_only=True)
+            ws = wb.active
+            for row in ws.iter_rows(min_row=2, values_only=True):
+                if not row:
+                    continue
+                cols = list(row) + [""] * (6 - len(row))
+                primeira = str(cols[0] or "")
+                if ("-" in primeira and ":" in primeira) or primeira == "":
+                    _ts, _nome, _emp, _cnpj, proc, mid = cols[:6]
+                else:
+                    _nome, _emp, _cnpj, proc = cols[:4]
+                    mid = ""
+                pl = str(proc or "").lower()
+                if (pl.startswith("pendente") or pl.startswith("falha")) and mid:
+                    ids.add(str(mid))
+        except Exception:
+            pass
+        return ids
 
     def _atualizar_billing(self):
         """Lê billing.ndjson e atualiza display + cor (alerta se >= limite)."""
@@ -590,6 +705,308 @@ class PipelineGUI(tk.Tk):
         except Exception as e:
             self.gui_q.put(("log", f"❌ Erro no backup: {e}"))
 
+    # ---- Aba Auditoria (todas as admissões, todas as tentativas) ---
+
+    def _build_auditoria(self):
+        f = ttk.Frame(self.tab_audit)
+        f.pack(fill="both", expand=True, padx=15, pady=15)
+
+        bar = ttk.Frame(f)
+        bar.pack(fill="x", pady=(0, 8))
+        ttk.Label(bar, text="Histórico completo (todas as tentativas, ordem cronológica reversa):").pack(side="left")
+        ttk.Label(bar, text="  Buscar:").pack(side="left", padx=(20, 4))
+        ttk.Entry(bar, textvariable=self.filtro_audit_var, width=30).pack(side="left")
+        ttk.Button(bar, text="🔄 Atualizar", command=self._refresh_auditoria).pack(side="left", padx=15)
+
+        cols = ("ts", "nome", "empresa", "cnpj", "procedencia", "msg_id")
+        self.tree_audit = ttk.Treeview(f, columns=cols, show="headings", height=22)
+        headers = {
+            "ts": ("Data/Hora", 140),
+            "nome": ("Nome", 220),
+            "empresa": ("Empresa", 220),
+            "cnpj": ("CNPJ", 130),
+            "procedencia": ("Procedência", 380),
+            "msg_id": ("msg_id", 140),
+        }
+        for c, (txt, w) in headers.items():
+            self.tree_audit.heading(c, text=txt)
+            self.tree_audit.column(c, width=w, anchor="w")
+
+        sb = ttk.Scrollbar(f, orient="vertical", command=self.tree_audit.yview)
+        self.tree_audit.configure(yscrollcommand=sb.set)
+        self.tree_audit.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+
+        # Cores por categoria
+        self.tree_audit.tag_configure("ok", background="#e8f5e9")
+        self.tree_audit.tag_configure("pend_cli", background="#e3f2fd")
+        self.tree_audit.tag_configure("pend_int", background="#fff3e0")
+        self.tree_audit.tag_configure("falha", background="#ffebee")
+
+    def _refresh_auditoria(self):
+        if not hasattr(self, "tree_audit"):
+            return
+        for item in self.tree_audit.get_children():
+            self.tree_audit.delete(item)
+        if not PLANILHA_ADMISSOES.exists():
+            return
+        try:
+            from openpyxl import load_workbook
+            wb = load_workbook(PLANILHA_ADMISSOES, read_only=True)
+            ws = wb.active
+            rows = list(ws.iter_rows(values_only=True))
+            if len(rows) <= 1:
+                return
+            filtro = (self.filtro_audit_var.get() or "").strip().lower()
+            for row in reversed(rows[1:]):
+                if not row or not any(row):
+                    continue
+                cols = list(row) + [""] * (6 - len(row))
+                primeira = str(cols[0] or "")
+                if ("-" in primeira and ":" in primeira) or primeira == "":
+                    ts, nome, empresa, cnpj, procedencia, msg_id = cols[:6]
+                else:
+                    nome, empresa, cnpj, procedencia = cols[:4]
+                    ts, msg_id = "", ""
+                ts = str(ts or ""); nome = str(nome or ""); empresa = str(empresa or "")
+                cnpj = str(cnpj or ""); procedencia = str(procedencia or "")
+                msg_id = str(msg_id or "")
+                hay = " ".join((ts, nome, empresa, cnpj, procedencia)).lower()
+                if filtro and filtro not in hay:
+                    continue
+                proc_low = procedencia.lower()
+                if proc_low.startswith("cadastrado") or proc_low.startswith("dry-run"):
+                    tag = "ok"
+                elif "interno" in proc_low:
+                    tag = "pend_int"
+                elif proc_low.startswith("pendente"):
+                    tag = "pend_cli"
+                else:
+                    tag = "falha"
+                self.tree_audit.insert(
+                    "", "end",
+                    values=(ts, nome, empresa, cnpj, procedencia, msg_id[:16] if msg_id else ""),
+                    tags=(tag,),
+                )
+        except Exception as e:
+            self.gui_q.put(("log", f"⚠ Erro lendo auditoria: {e}"))
+
+    # ---- Aba Estatísticas ---------------------------------------
+
+    def _build_estatisticas(self):
+        f = ttk.Frame(self.tab_stats)
+        f.pack(fill="both", expand=True, padx=15, pady=15)
+
+        bar = ttk.Frame(f)
+        bar.pack(fill="x", pady=(0, 8))
+        ttk.Button(bar, text="🔄 Recalcular", command=self._refresh_estatisticas).pack(side="left")
+
+        self.stats_text = scrolledtext.ScrolledText(
+            f, font=("Consolas", 10), state="disabled", wrap="word",
+        )
+        self.stats_text.pack(fill="both", expand=True)
+
+    def _refresh_estatisticas(self):
+        if not hasattr(self, "stats_text"):
+            return
+
+        linhas = ["═" * 70, "  ESTATÍSTICAS DO PIPELINE", "═" * 70, ""]
+
+        # Billing
+        b = sum_billing_mes_atual()
+        mes_atual = datetime.now().strftime("%B/%Y").upper()
+        linhas += [
+            f"💰 BILLING — {mes_atual}",
+            f"   Custo total Claude:   US$ {b['custo_usd']:.4f}",
+            f"   Chamadas API:         {b['n_calls']}",
+            f"   Passadas do pipeline: {b['n_passadas']}",
+            f"   Input tokens:         {b['input_tokens']:,}",
+            f"   Output tokens:        {b['output_tokens']:,}",
+            f"   Limite mensal:        US$ {self.billing_limite_usd:.2f}",
+        ]
+        if b["custo_usd"] >= self.billing_limite_usd:
+            linhas.append(f"   ⚠ LIMITE EXCEDIDO! ({b['custo_usd'] / self.billing_limite_usd:.0%})")
+        linhas.append("")
+
+        # Stats da planilha
+        if not PLANILHA_ADMISSOES.exists():
+            linhas.append("(Planilha admissoes.xlsx ainda não existe.)")
+            self._update_stats_text("\n".join(linhas))
+            return
+
+        try:
+            from collections import Counter
+            from openpyxl import load_workbook
+            wb = load_workbook(PLANILHA_ADMISSOES, read_only=True)
+            ws = wb.active
+            rows = list(ws.iter_rows(values_only=True))[1:]
+            rows = [r for r in rows if r and any(r)]
+
+            cont_status = Counter()
+            cont_empresa = Counter()
+            cont_motivo = Counter()
+            for row in rows:
+                cols = list(row) + [""] * (6 - len(row))
+                primeira = str(cols[0] or "")
+                if ("-" in primeira and ":" in primeira) or primeira == "":
+                    _ts, _nome, empresa, _cnpj, procedencia, _mid = cols[:6]
+                else:
+                    _nome, empresa, _cnpj, procedencia = cols[:4]
+                empresa = str(empresa or "(sem empresa)")
+                procedencia = str(procedencia or "")
+                pl = procedencia.lower()
+                if pl.startswith("cadastrado"):
+                    cont_status["✅ Cadastrado"] += 1
+                elif pl.startswith("dry-run"):
+                    cont_status["🧪 Dry-run"] += 1
+                elif "interno" in pl:
+                    cont_status["🔧 Pendente interno"] += 1
+                elif pl.startswith("pendente"):
+                    cont_status["⚠ Pendente cliente"] += 1
+                else:
+                    cont_status["❌ Falha"] += 1
+                cont_empresa[empresa] += 1
+                # Motivo da pendência (primeira parte do procedência)
+                if "—" in procedencia:
+                    motivo = procedencia.split("—", 1)[1].strip()[:80]
+                    if pl.startswith("pendente") or pl.startswith("falha"):
+                        cont_motivo[motivo] += 1
+
+            total = sum(cont_status.values())
+            ok = cont_status.get("✅ Cadastrado", 0) + cont_status.get("🧪 Dry-run", 0)
+            taxa_sucesso = (ok / total * 100) if total else 0
+
+            linhas += [
+                f"📊 TOTAL DE ADMISSÕES PROCESSADAS: {total}",
+                f"   Taxa de sucesso: {taxa_sucesso:.1f}%",
+                "",
+                "  Por status:",
+            ]
+            for status, n in cont_status.most_common():
+                pct = (n / total * 100) if total else 0
+                bar_chr = "█" * int(pct / 3)
+                linhas.append(f"    {status:30s} {n:4d}  {bar_chr} {pct:.1f}%")
+
+            linhas += ["", "🏢 TOP 10 EMPRESAS:"]
+            for emp, n in cont_empresa.most_common(10):
+                linhas.append(f"   {n:4d}  {emp}")
+
+            if cont_motivo:
+                linhas += ["", "🔍 TOP 10 MOTIVOS DE PENDÊNCIA/FALHA:"]
+                for motivo, n in cont_motivo.most_common(10):
+                    linhas.append(f"   {n:4d}  {motivo}")
+
+            if b["custo_usd"] > 0 and total > 0:
+                custo_med = b["custo_usd"] / total
+                linhas += ["", f"💵 Custo médio por admissão: US$ {custo_med:.4f}"]
+
+        except Exception as e:
+            linhas.append(f"\n⚠ Erro lendo planilha: {e}")
+
+        self._update_stats_text("\n".join(linhas))
+
+    def _update_stats_text(self, texto: str):
+        self.stats_text.configure(state="normal")
+        self.stats_text.delete("1.0", "end")
+        self.stats_text.insert("1.0", texto)
+        self.stats_text.configure(state="disabled")
+
+    # ---- Aba Regras (editor de regras.json) ---------------------
+
+    def _build_regras(self):
+        f = ttk.Frame(self.tab_regras)
+        f.pack(fill="both", expand=True, padx=15, pady=15)
+
+        ttk.Label(f, text=f"Edite regras.json diretamente. Chaves começadas com '_' são docs/exemplos (ignoradas pelo pipeline).",
+                  foreground="#666", wraplength=900).pack(anchor="w", pady=(0, 8))
+
+        self.regras_text = scrolledtext.ScrolledText(
+            f, font=("Consolas", 9), wrap="none",
+        )
+        self.regras_text.pack(fill="both", expand=True)
+
+        bar = ttk.Frame(f)
+        bar.pack(fill="x", pady=(10, 0))
+        ttk.Button(bar, text="💾 Salvar", command=self._salvar_regras).pack(side="left", padx=5)
+        ttk.Button(bar, text="🔄 Recarregar do disco", command=self._carregar_regras_no_editor).pack(side="left", padx=5)
+        ttk.Button(bar, text="✓ Validar JSON", command=self._validar_regras_json).pack(side="left", padx=5)
+
+        self._carregar_regras_no_editor()
+
+    def _carregar_regras_no_editor(self):
+        try:
+            if REGRAS_FILE.exists():
+                conteudo = REGRAS_FILE.read_text(encoding="utf-8")
+            else:
+                conteudo = "{}"
+            self.regras_text.delete("1.0", "end")
+            self.regras_text.insert("1.0", conteudo)
+        except Exception as e:
+            messagebox.showerror("Erro carregando regras.json", str(e))
+
+    def _validar_regras_json(self):
+        try:
+            json.loads(self.regras_text.get("1.0", "end"))
+            messagebox.showinfo("JSON válido", "Sintaxe OK!")
+        except json.JSONDecodeError as e:
+            messagebox.showerror("JSON inválido", str(e))
+
+    def _salvar_regras(self):
+        try:
+            conteudo = self.regras_text.get("1.0", "end").strip()
+            json.loads(conteudo)  # valida antes de salvar
+        except json.JSONDecodeError as e:
+            messagebox.showerror("JSON inválido — não salvou", str(e))
+            return
+        try:
+            REGRAS_FILE.write_text(conteudo + "\n", encoding="utf-8")
+            self.gui_q.put(("log", f"💾 regras.json salvo ({len(conteudo)} chars)"))
+            messagebox.showinfo("Salvo", "regras.json salvo com sucesso!\n\n"
+                                "Reinicie o pipeline pra que mudanças entrem em vigor.")
+        except Exception as e:
+            messagebox.showerror("Erro salvando", str(e))
+
+    # ---- Toast notification + dark mode -------------------------
+
+    def _notify_toast(self, titulo: str, msg: str):
+        """Tenta toast Windows via plyer; fallback popup Tk topmost."""
+        if _HAS_PLYER:
+            try:
+                _plyer_notif.notify(
+                    title=titulo, message=msg, app_name="Crosara DP", timeout=6,
+                )
+                return
+            except Exception:
+                pass
+        # Fallback: popup leve no canto
+        popup = tk.Toplevel(self)
+        popup.title(titulo)
+        popup.attributes("-topmost", True)
+        popup.geometry("400x100+100+100")
+        ttk.Label(popup, text=titulo, font=("Segoe UI", 11, "bold")).pack(padx=15, pady=(10, 0))
+        ttk.Label(popup, text=msg, wraplength=380).pack(padx=15, pady=(2, 10))
+        popup.after(6000, popup.destroy)
+
+    def _toggle_dark_mode(self):
+        is_dark = bool(self.dark_mode_var.get())
+        style = ttk.Style()
+        if is_dark:
+            bg, fg, sel = "#1e1e1e", "#d4d4d4", "#264f78"
+            try:
+                style.theme_use("clam")
+            except tk.TclError:
+                pass
+            style.configure("Treeview", background=bg, foreground=fg, fieldbackground=bg)
+            style.configure("Treeview.Heading", background="#2d2d2d", foreground=fg)
+            style.map("Treeview", background=[("selected", sel)])
+            self.configure(background=bg)
+        else:
+            style.theme_use(style.theme_names()[0])  # default
+            style.configure("Treeview", background="white", foreground="black", fieldbackground="white")
+            style.configure("Treeview.Heading", background="#f0f0f0", foreground="black")
+            self.configure(background="SystemButtonFace")
+        self.gui_q.put(("log", f"🎨 Modo {'escuro' if is_dark else 'claro'} ativado"))
+
     # ---- Resolver pendência ------------------------------------
 
     def _resolver_selecionada(self):
@@ -624,9 +1041,16 @@ class PipelineGUI(tk.Tk):
 # ============================================================
 
 class ResolverPendenciaDialog(tk.Toplevel):
-    """Dialog modal pra resolver uma pendência: mostra dados extraídos,
-    permite editar o payload e dispara POST manual. Também tem botão pra
-    "marcar como resolvido sem POSTar" (caso DP tenha cadastrado no Desktop)."""
+    """Dialog modal pra resolver uma pendência. 2 modos:
+
+    1. **Form estruturado** (default quando procedência tem "faltam: A, B, C"):
+       um Entry por campo faltante, com hint de formato. Submit injeta no
+       payload e POSTa. Mais amigável que JSON cru.
+    2. **Editor JSON** (fallback ou opt-in): edição livre do payload
+       inteiro. Útil pra pendências internas ou casos complexos.
+
+    Botão extra "Marcar como resolvido manualmente" pra quando DP
+    cadastrou direto no eContador Desktop sem POST."""
 
     def __init__(self, parent, valores_linha, config, gui_q, on_resolved):
         super().__init__(parent)
@@ -634,10 +1058,15 @@ class ResolverPendenciaDialog(tk.Toplevel):
         self.gui_q = gui_q
         self.on_resolved = on_resolved
         self.valores = valores_linha
-        nome, empresa, cnpj, tipo, procedencia = valores_linha
+        # Compat: linhas novas têm 6 cols (com timestamp), antigas 5
+        if len(valores_linha) == 6:
+            ts, nome, empresa, cnpj, tipo, procedencia = valores_linha
+        else:
+            nome, empresa, cnpj, tipo, procedencia = valores_linha
+            ts = ""
 
         self.title(f"Resolver Pendência — {nome}")
-        self.geometry("950x680")
+        self.geometry("950x720")
         self.transient(parent)
 
         # Header com info
@@ -646,6 +1075,8 @@ class ResolverPendenciaDialog(tk.Toplevel):
         ttk.Label(f_head, text=nome, font=("Segoe UI", 13, "bold")).pack(anchor="w")
         ttk.Label(f_head, text=f"Empresa: {empresa}").pack(anchor="w")
         ttk.Label(f_head, text=f"CNPJ: {cnpj}").pack(anchor="w")
+        if ts:
+            ttk.Label(f_head, text=f"Quando: {ts}").pack(anchor="w")
         cor_tipo = "#e65100" if tipo == "interno" else "#1565c0"
         ttk.Label(f_head, text=f"Tipo de pendência: {tipo.upper()}",
                   foreground=cor_tipo, font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(5, 0))
@@ -654,24 +1085,32 @@ class ResolverPendenciaDialog(tk.Toplevel):
 
         # Procura o payload correspondente
         self.payload_path = self._achar_payload(nome)
+
+        # Detecta campos faltando da procedência → habilita form estruturado
+        # Padrões aceitos: "faltam: A, B, C", "faltam A, B e C", "falta X"
+        self.campos_faltando = self._parsear_campos_faltando(procedencia)
+
+        # Notebook interno: Form vs JSON
+        nb_modo = ttk.Notebook(self)
+        nb_modo.pack(fill="both", expand=True, padx=15, pady=(8, 0))
+
+        # ---- Aba Form Estruturado ----
+        f_form = ttk.Frame(nb_modo)
+        nb_modo.add(f_form, text="📝 Form estruturado")
+        self._build_form_estruturado(f_form)
+
+        # ---- Aba JSON Editor ----
+        f_json = ttk.Frame(nb_modo)
+        nb_modo.add(f_json, text="{ }  Editor JSON")
         if self.payload_path:
-            ttk.Label(self,
-                      text=f"💾 Payload localizado: {self.payload_path.name}",
-                      foreground="#2e7d32").pack(anchor="w", padx=15, pady=(8, 0))
+            ttk.Label(f_json, text=f"Payload: {self.payload_path.name}",
+                      foreground="#666").pack(anchor="w", padx=5, pady=(5, 3))
         else:
-            ttk.Label(self,
-                      text="⚠ Payload não encontrado em payloads/ — "
-                           "só dá pra marcar como resolvido manualmente.",
-                      foreground="#c62828").pack(anchor="w", padx=15, pady=(8, 0))
+            ttk.Label(f_json, text="⚠ Sem payload em payloads/",
+                      foreground="#c62828").pack(anchor="w", padx=5, pady=(5, 3))
 
-        # Editor de JSON do payload
-        ttk.Label(self, text="Payload JSON (edite os campos faltando aqui antes de POSTar):").pack(
-            anchor="w", padx=15, pady=(10, 3))
-
-        f_text = ttk.Frame(self)
-        f_text.pack(fill="both", expand=True, padx=15)
-        self.txt = scrolledtext.ScrolledText(f_text, font=("Consolas", 9), wrap="none")
-        self.txt.pack(fill="both", expand=True)
+        self.txt = scrolledtext.ScrolledText(f_json, font=("Consolas", 9), wrap="none")
+        self.txt.pack(fill="both", expand=True, padx=5, pady=5)
 
         if self.payload_path:
             try:
@@ -681,18 +1120,174 @@ class ResolverPendenciaDialog(tk.Toplevel):
             except Exception as e:
                 self.txt.insert("1.0", f"// Erro carregando payload:\n// {e}")
         else:
-            self.txt.insert("1.0", "// Sem payload disponível.\n// Use 'Marcar como resolvido manualmente' quando o DP cadastrar no eContador direto.")
-            self.txt.configure(state="disabled")
+            self.txt.insert("1.0",
+                "// Sem payload disponível.\n"
+                "// Use 'Marcar como resolvido manualmente' se você cadastrou no eContador direto."
+            )
 
-        # Botões
+        # Se há campos faltando, abre direto no form. Senão, no JSON.
+        if self.campos_faltando:
+            nb_modo.select(f_form)
+        else:
+            nb_modo.select(f_json)
+
+        # Botões inferiores
         f_btn = ttk.Frame(self)
         f_btn.pack(fill="x", padx=15, pady=12)
         if self.payload_path:
-            ttk.Button(f_btn, text="📤  POSTar payload corrigido",
-                       command=self._postar).pack(side="left", padx=5)
+            ttk.Button(f_btn, text="📤  Aplicar form e POSTar",
+                       command=self._aplicar_form_e_postar).pack(side="left", padx=5)
+            ttk.Button(f_btn, text="📤  POSTar JSON editado",
+                       command=self._postar_json_cru).pack(side="left", padx=5)
         ttk.Button(f_btn, text="✅  Marcar como resolvido manualmente",
                    command=self._marcar_resolvido).pack(side="left", padx=5)
         ttk.Button(f_btn, text="Cancelar", command=self.destroy).pack(side="right", padx=5)
+
+    def _parsear_campos_faltando(self, procedencia: str) -> list[str]:
+        """Extrai lista de labels faltantes de 'Pendente cliente — faltam: A, B'.
+        Retorna [] se não conseguir parsear."""
+        import re
+        m = re.search(r"falta[m]?:?\s*(.+?)(?:\.|$)", procedencia, re.IGNORECASE)
+        if not m:
+            return []
+        bruto = m.group(1).strip()
+        # Split por vírgula ou ' e '
+        parts = re.split(r",\s*|\s+e\s+", bruto)
+        return [p.strip() for p in parts if p.strip()]
+
+    def _build_form_estruturado(self, parent: ttk.Frame):
+        """Form com 1 Entry por campo faltante. Se não há campos parseáveis,
+        mostra info amigável."""
+        self.form_vars: dict[str, tk.StringVar] = {}
+
+        canvas_frame = ttk.Frame(parent)
+        canvas_frame.pack(fill="both", expand=True, padx=5, pady=5)
+
+        if not self.campos_faltando:
+            ttk.Label(
+                canvas_frame,
+                text=("Esta pendência não tem campos estruturados pra preencher "
+                      "(provavelmente é pendência interna ou de Claude marcando "
+                      "_pendente). Use a aba 'Editor JSON' pra editar o payload "
+                      "manualmente, ou clique em 'Marcar como resolvido manualmente'."),
+                wraplength=850,
+                foreground="#666",
+            ).pack(padx=10, pady=20)
+            return
+
+        ttk.Label(
+            canvas_frame,
+            text=f"Campos faltantes ({len(self.campos_faltando)}). "
+                 f"Preencha e clique 'Aplicar form e POSTar':",
+            font=("Segoe UI", 10, "bold"),
+        ).pack(anchor="w", pady=(0, 10))
+
+        for label in self.campos_faltando:
+            attr = LABEL_PRA_ATTR.get(label)
+            row = ttk.Frame(canvas_frame)
+            row.pack(fill="x", pady=4)
+            ttk.Label(row, text=label, width=35, anchor="w").pack(side="left")
+
+            v = tk.StringVar()
+            self.form_vars[label] = v
+            ent = ttk.Entry(row, textvariable=v, width=40)
+            ent.pack(side="left", padx=5)
+
+            hint = HINTS_FORM.get(attr or "", "")
+            if hint:
+                ttk.Label(row, text=hint, foreground="#888",
+                          font=("Segoe UI", 8)).pack(side="left", padx=8)
+            if not attr:
+                ttk.Label(row, text="(label não mapeado — adicionar manualmente via JSON)",
+                          foreground="#c62828", font=("Segoe UI", 8)).pack(side="left", padx=5)
+
+    def _aplicar_form_e_postar(self):
+        """Pega os valores do form, injeta nos attributes do payload e POSTa."""
+        if not self.payload_path:
+            messagebox.showerror("Sem payload", "Não encontrei payload pra esta pendência.")
+            return
+
+        try:
+            doc = json.loads(self.payload_path.read_text(encoding="utf-8"))
+        except Exception as e:
+            messagebox.showerror("Erro lendo payload", str(e))
+            return
+
+        payload = doc.get("payload") or {}
+        if "data" not in payload:
+            messagebox.showerror("Payload inválido", "Estrutura sem 'data'.")
+            return
+        attrs = payload["data"].get("attributes") or {}
+
+        # Aplica cada valor preenchido
+        aplicados = []
+        nao_mapeados = []
+        for label, var in self.form_vars.items():
+            valor = (var.get() or "").strip()
+            if not valor:
+                continue  # vazio = não muda
+            attr = LABEL_PRA_ATTR.get(label)
+            if not attr:
+                nao_mapeados.append(label)
+                continue
+            # Conversão por tipo
+            try:
+                if attr in ("salario",):
+                    valor_conv = float(valor.replace(",", "."))
+                elif attr in ("cpf", "ctps", "diascontratoexperiencia"):
+                    import re
+                    digs = re.sub(r"\D", "", valor)
+                    valor_conv = int(digs) if digs else None
+                    if valor_conv is None:
+                        raise ValueError(f"{label} precisa ter dígitos")
+                elif attr == "primeiroemprego":
+                    valor_conv = valor.lower() in ("true", "sim", "1", "y", "yes")
+                else:
+                    valor_conv = valor
+            except Exception as e:
+                messagebox.showerror(
+                    "Valor inválido",
+                    f"Campo '{label}' ({attr}): {e}\n\n"
+                    f"Confira o formato e tente de novo."
+                )
+                return
+            attrs[attr] = valor_conv
+            aplicados.append(f"{label} = {valor_conv}")
+
+        if nao_mapeados:
+            messagebox.showwarning(
+                "Campos não mapeados",
+                f"Estes campos não pude aplicar automaticamente: {nao_mapeados}.\n"
+                f"Use a aba 'Editor JSON' pra adicionar manualmente."
+            )
+            return
+
+        if not aplicados:
+            messagebox.showinfo("Nada pra aplicar", "Nenhum campo foi preenchido.")
+            return
+
+        payload["data"]["attributes"] = attrs
+
+        if not messagebox.askyesno(
+            "Confirmar POST",
+            f"Vou aplicar {len(aplicados)} campo(s) e POSTar:\n\n"
+            + "\n".join(f"  • {x}" for x in aplicados)
+            + "\n\nConfirma?"
+        ):
+            return
+
+        self._postar(payload)
+
+    def _postar_json_cru(self):
+        """POSTa o JSON do editor (sem usar form)."""
+        try:
+            payload = json.loads(self.txt.get("1.0", "end"))
+        except json.JSONDecodeError as e:
+            messagebox.showerror("JSON inválido", f"{e}")
+            return
+        if not messagebox.askyesno("Confirmar POST", "POSTar este payload em /candidatos?"):
+            return
+        self._postar(payload)
 
     def _achar_payload(self, nome: str) -> Path | None:
         """Procura em payloads/<ts>_<msgid>.json o arquivo cujo conteúdo
@@ -710,28 +1305,30 @@ class ResolverPendenciaDialog(tk.Toplevel):
                 pass
         return None
 
-    def _postar(self):
-        try:
-            payload = json.loads(self.txt.get("1.0", "end"))
-        except json.JSONDecodeError as e:
-            messagebox.showerror("JSON inválido", f"O texto não é JSON válido:\n\n{e}")
-            return
-        if not messagebox.askyesno(
-            "Confirmar POST",
-            "POSTar este payload em /candidatos do eContador?\n\n"
-            "Se der sucesso, a admissão vai pra aba Processadas."
-        ):
-            return
-
+    def _postar(self, payload: dict):
+        """POSTa o payload (já validado JSON) em /candidatos. Reusado pelos
+        2 fluxos: form estruturado e editor JSON cru."""
         api = EContadorAPI(self.config.base_url, self.config.token)
         try:
             ok, ref, body_err = api.post_candidato(payload)
             if ok:
-                # Atualiza planilha — append novo registro
-                nome, empresa, cnpj, *_ = self.valores
+                # Extrai nome/empresa/cnpj/msg_id da linha pra append na planilha
+                if len(self.valores) == 6:
+                    _ts, nome, empresa, cnpj, _tipo, _proc = self.valores
+                else:
+                    nome, empresa, cnpj, _tipo, _proc = self.valores
+                # Procura msg_id no payload original
+                msg_id = ""
+                if self.payload_path:
+                    try:
+                        doc = json.loads(self.payload_path.read_text(encoding="utf-8"))
+                        msg_id = str(doc.get("msg_id", ""))
+                    except Exception:
+                        pass
                 registrar_admissao_planilha(
                     nome=nome, empresa=empresa, cnpj=cnpj,
                     procedencia=f"Cadastrado — candidato {ref} (resolvido via UI)",
+                    msg_id=msg_id,
                 )
                 messagebox.showinfo("Sucesso", f"Candidato criado: {ref}")
                 self.gui_q.put(("log", f"✓ Pendência resolvida via UI → candidato {ref}"))
@@ -750,7 +1347,11 @@ class ResolverPendenciaDialog(tk.Toplevel):
             "Aparece nova linha 'Cadastrado manualmente' na planilha.)"
         ):
             return
-        nome, empresa, cnpj, *_ = self.valores
+        # 5 cols (legacy) ou 6 cols (com timestamp)
+        if len(self.valores) == 6:
+            _ts, nome, empresa, cnpj, _tipo, _proc = self.valores
+        else:
+            nome, empresa, cnpj, _tipo, _proc = self.valores
         registrar_admissao_planilha(
             nome=nome, empresa=empresa, cnpj=cnpj,
             procedencia=f"Cadastrado manualmente — via UI ({datetime.now().strftime('%d/%m/%Y %H:%M')})",
