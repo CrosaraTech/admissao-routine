@@ -1034,47 +1034,117 @@ class PipelineGUI(tk.Tk):
         except Exception as e:
             self.gui_q.put(("log", f"⚠ Erro lendo auditoria: {e}"))
 
-    # ---- Aba Estatísticas ---------------------------------------
+    # ---- Aba Estatísticas (redesign com cards + barras) -----------
+
+    # Cores adicionais usadas nas barras de status (paleta complementar
+    # ao tema Crosara, similar à proposta enviada pelo usuário)
+    _COR_TRILHA = "#F1EFE8"     # fundo cinza claro das barras
+    _COR_VERDE_OK = "#4E8A6B"   # cadastrado
+    _COR_AMBAR = "#E0A030"      # pendente interno
+    _COR_BADGE_TXT = "#B25529"  # texto do badge de motivo
 
     def _build_estatisticas(self):
-        f = ttk.Frame(self.tab_stats)
-        f.pack(fill="both", expand=True, padx=15, pady=15)
+        f = self.tab_stats
 
-        bar = ttk.Frame(f)
-        bar.pack(fill="x", pady=(0, 8))
-        ttk.Button(bar, text="🔄 Recalcular", command=self._refresh_estatisticas).pack(side="left")
+        # Toolbar superior (botão Recalcular à direita)
+        toolbar = tk.Frame(f, bg=COR_BEIGE)
+        toolbar.pack(fill="x", pady=(10, 12))
+        ttk.Button(toolbar, text="↻  Recalcular",
+                   command=self._refresh_estatisticas).pack(side="right")
 
-        self.stats_text = scrolledtext.ScrolledText(
-            f, font=("Consolas", 10), state="disabled", wrap="word",
+        # Container scrollável (conteúdo pode ser longo)
+        wrap = tk.Frame(f, bg=COR_BEIGE)
+        wrap.pack(fill="both", expand=True)
+
+        canvas = tk.Canvas(wrap, bg=COR_BEIGE, highlightthickness=0)
+        sb = ttk.Scrollbar(wrap, orient="vertical", command=canvas.yview)
+        self.stats_body = tk.Frame(canvas, bg=COR_BEIGE)
+
+        self.stats_body.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all")),
         )
-        self.stats_text.pack(fill="both", expand=True)
+        _win_id = canvas.create_window((0, 0), window=self.stats_body, anchor="nw")
+        canvas.bind(
+            "<Configure>",
+            lambda e: canvas.itemconfigure(_win_id, width=e.width),
+        )
+        canvas.configure(yscrollcommand=sb.set)
+
+        canvas.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+
+        # Scroll com mousewheel
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
 
     def _refresh_estatisticas(self):
-        if not hasattr(self, "stats_text"):
+        if not hasattr(self, "stats_body"):
             return
 
-        linhas = ["═" * 70, "  ESTATÍSTICAS DO PIPELINE", "═" * 70, ""]
+        # Limpa conteúdo anterior
+        for w in self.stats_body.winfo_children():
+            w.destroy()
 
-        # Billing
+        body = self.stats_body
         b = sum_billing_mes_atual()
-        mes_atual = datetime.now().strftime("%B/%Y").upper()
-        linhas += [
-            f"💰 BILLING — {mes_atual}",
-            f"   Custo total Claude:   US$ {b['custo_usd']:.4f}",
-            f"   Chamadas API:         {b['n_calls']}",
-            f"   Passadas do pipeline: {b['n_passadas']}",
-            f"   Input tokens:         {b['input_tokens']:,}",
-            f"   Output tokens:        {b['output_tokens']:,}",
-            f"   Limite mensal:        US$ {self.billing_limite_usd:.2f}",
-        ]
-        if b["custo_usd"] >= self.billing_limite_usd:
-            linhas.append(f"   ⚠ LIMITE EXCEDIDO! ({b['custo_usd'] / self.billing_limite_usd:.0%})")
-        linhas.append("")
+        mes = datetime.now().strftime("%B / %Y").capitalize()
 
-        # Stats da planilha
+        # ===== BILLING SECTION =====
+        tk.Label(body, text=f"BILLING — {mes.upper()}",
+                 bg=COR_BEIGE, fg=COR_TEXT_MUTED,
+                 font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(4, 8))
+
+        # 4 cards de métrica
+        metricas = tk.Frame(body, bg=COR_BEIGE)
+        metricas.pack(fill="x", pady=(0, 10))
+        for i in range(4):
+            metricas.grid_columnconfigure(i, weight=1)
+
+        def _metric(col, label, valor, cor_valor):
+            c = tk.Frame(metricas, bg=COR_WHITE, bd=1, relief="solid",
+                         highlightbackground=COR_BORDER, highlightthickness=0)
+            c.grid(row=0, column=col, sticky="nsew",
+                   padx=(0 if col == 0 else 6, 6 if col < 3 else 0))
+            tk.Label(c, text=label, bg=COR_WHITE, fg=COR_TEXT_MUTED,
+                     font=("Segoe UI", 10)).pack(anchor="w", padx=14, pady=(12, 2))
+            tk.Label(c, text=valor, bg=COR_WHITE, fg=cor_valor,
+                     font=("Segoe UI", 19, "bold")).pack(anchor="w", padx=14, pady=(0, 12))
+
+        custo_total = b["custo_usd"]
+        custo_med = (custo_total / b["n_passadas"]) if b["n_passadas"] else 0.0
+        _metric(0, "Custo total", f"US$ {custo_total:.2f}", COR_ORANGE)
+        _metric(1, "Chamadas API", str(b["n_calls"]), COR_TEXT_DARK)
+        _metric(2, "Passadas", str(b["n_passadas"]), COR_TEXT_DARK)
+        _metric(3, "Custo médio/adm.", f"US$ {custo_med:.3f}", COR_TEXT_DARK)
+
+        # 3 kv-cards (tokens + limite)
+        kv = tk.Frame(body, bg=COR_BEIGE)
+        kv.pack(fill="x", pady=(0, 16))
+        for i in range(3):
+            kv.grid_columnconfigure(i, weight=1)
+
+        def _kv(col, label, valor, valor_cor=COR_TEXT_DARK):
+            c = tk.Frame(kv, bg=COR_WHITE, bd=1, relief="solid")
+            c.grid(row=0, column=col, sticky="nsew",
+                   padx=(0 if col == 0 else 6, 6 if col < 2 else 0))
+            row = tk.Frame(c, bg=COR_WHITE)
+            row.pack(fill="x", padx=14, pady=12)
+            tk.Label(row, text=label, bg=COR_WHITE, fg=COR_TEXT_MUTED,
+                     font=("Segoe UI", 10)).pack(side="left")
+            tk.Label(row, text=valor, bg=COR_WHITE, fg=valor_cor,
+                     font=("Segoe UI", 12, "bold")).pack(side="right")
+
+        _kv(0, "Input tokens", f"{b['input_tokens']:,}".replace(",", "."))
+        _kv(1, "Output tokens", f"{b['output_tokens']:,}".replace(",", "."))
+        limite_cor = COR_DANGER if custo_total >= self.billing_limite_usd else COR_TEXT_DARK
+        _kv(2, "Limite mensal", f"US$ {self.billing_limite_usd:.2f}", limite_cor)
+
+        # ===== STATS DA PLANILHA =====
         if not PLANILHA_ADMISSOES.exists():
-            linhas.append("(Planilha admissoes.xlsx ainda não existe.)")
-            self._update_stats_text("\n".join(linhas))
+            tk.Label(body, text="(Planilha admissoes.xlsx ainda não existe.)",
+                     bg=COR_BEIGE, fg=COR_TEXT_MUTED).pack(pady=20)
             return
 
         try:
@@ -1082,8 +1152,7 @@ class PipelineGUI(tk.Tk):
             from openpyxl import load_workbook
             wb = load_workbook(PLANILHA_ADMISSOES, read_only=True)
             ws = wb.active
-            rows = list(ws.iter_rows(values_only=True))[1:]
-            rows = [r for r in rows if r and any(r)]
+            rows = [r for r in list(ws.iter_rows(values_only=True))[1:] if r and any(r)]
 
             cont_status = Counter()
             cont_empresa = Counter()
@@ -1095,64 +1164,135 @@ class PipelineGUI(tk.Tk):
                     _ts, _nome, empresa, _cnpj, procedencia, _mid = cols[:6]
                 else:
                     _nome, empresa, _cnpj, procedencia = cols[:4]
-                empresa = str(empresa or "(sem empresa)")
+                empresa = str(empresa or "(sem identificação)").strip() or "(sem identificação)"
                 procedencia = str(procedencia or "")
                 pl = procedencia.lower()
                 if pl.startswith("cadastrado"):
-                    cont_status["✅ Cadastrado"] += 1
+                    cont_status["Cadastrado"] += 1
                 elif pl.startswith("dry-run"):
-                    cont_status["🧪 Dry-run"] += 1
+                    cont_status["Dry-run"] += 1
                 elif "interno" in pl:
-                    cont_status["🔧 Pendente interno"] += 1
+                    cont_status["Pendente interno"] += 1
                 elif pl.startswith("pendente"):
-                    cont_status["⚠ Pendente cliente"] += 1
+                    cont_status["Pendente cliente"] += 1
                 else:
-                    cont_status["❌ Falha"] += 1
+                    cont_status["Falha"] += 1
                 cont_empresa[empresa] += 1
-                # Motivo da pendência (primeira parte do procedência)
-                if "—" in procedencia:
-                    motivo = procedencia.split("—", 1)[1].strip()[:80]
-                    if pl.startswith("pendente") or pl.startswith("falha"):
-                        cont_motivo[motivo] += 1
+                if "—" in procedencia and (pl.startswith("pendente") or pl.startswith("falha")):
+                    motivo = procedencia.split("—", 1)[1].strip()[:100]
+                    cont_motivo[motivo] += 1
 
             total = sum(cont_status.values())
-            ok = cont_status.get("✅ Cadastrado", 0) + cont_status.get("🧪 Dry-run", 0)
-            taxa_sucesso = (ok / total * 100) if total else 0
+            ok_count = cont_status.get("Cadastrado", 0) + cont_status.get("Dry-run", 0)
+            taxa_sucesso = (ok_count / total * 100) if total else 0
 
-            linhas += [
-                f"📊 TOTAL DE ADMISSÕES PROCESSADAS: {total}",
-                f"   Taxa de sucesso: {taxa_sucesso:.1f}%",
-                "",
-                "  Por status:",
-            ]
-            for status, n in cont_status.most_common():
-                pct = (n / total * 100) if total else 0
-                bar_chr = "█" * int(pct / 3)
-                linhas.append(f"    {status:30s} {n:4d}  {bar_chr} {pct:.1f}%")
+            # ===== STATUS + EMPRESAS (lado a lado) =====
+            meio = tk.Frame(body, bg=COR_BEIGE)
+            meio.pack(fill="x", pady=(0, 14))
+            meio.grid_columnconfigure(0, weight=11)
+            meio.grid_columnconfigure(1, weight=9)
 
-            linhas += ["", "🏢 TOP 10 EMPRESAS:"]
-            for emp, n in cont_empresa.most_common(10):
-                linhas.append(f"   {n:4d}  {emp}")
+            # --- Card Status (com barras) ---
+            card_st = tk.Frame(meio, bg=COR_WHITE, bd=1, relief="solid")
+            card_st.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
 
-            if cont_motivo:
-                linhas += ["", "🔍 TOP 10 MOTIVOS DE PENDÊNCIA/FALHA:"]
-                for motivo, n in cont_motivo.most_common(10):
-                    linhas.append(f"   {n:4d}  {motivo}")
+            top_st = tk.Frame(card_st, bg=COR_WHITE)
+            top_st.pack(fill="x", padx=18, pady=(16, 12))
+            tk.Label(top_st, text="Admissões por status",
+                     bg=COR_WHITE, fg=COR_TEXT_DARK,
+                     font=("Segoe UI", 12, "bold")).pack(side="left")
+            sufx = f"{total} no total · {taxa_sucesso:.1f}% sucesso".replace(".", ",")
+            tk.Label(top_st, text=sufx,
+                     bg=COR_WHITE, fg=COR_TEXT_MUTED,
+                     font=("Segoe UI", 9)).pack(side="right")
 
-            if b["custo_usd"] > 0 and total > 0:
-                custo_med = b["custo_usd"] / total
-                linhas += ["", f"💵 Custo médio por admissão: US$ {custo_med:.4f}"]
+            cores_status = {
+                "Cadastrado": self._COR_VERDE_OK,
+                "Pendente cliente": COR_ORANGE,
+                "Pendente interno": self._COR_AMBAR,
+                "Falha": COR_DANGER,
+                "Dry-run": COR_INFO,
+            }
+            # Ordem fixa pra exibição consistente
+            ordem = ["Cadastrado", "Pendente cliente", "Pendente interno", "Falha", "Dry-run"]
+            for label in ordem:
+                qtd = cont_status.get(label, 0)
+                if qtd == 0 and label not in ("Cadastrado", "Pendente cliente", "Pendente interno", "Falha"):
+                    continue
+                pct = (qtd / total * 100) if total else 0
+                self._stat_barra(card_st, label, qtd, pct, cores_status[label])
+            tk.Frame(card_st, bg=COR_WHITE, height=6).pack()
 
+            # --- Card Empresas ---
+            card_emp = tk.Frame(meio, bg=COR_WHITE, bd=1, relief="solid")
+            card_emp.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
+            tk.Label(card_emp, text="Top empresas",
+                     bg=COR_WHITE, fg=COR_TEXT_DARK,
+                     font=("Segoe UI", 12, "bold")).pack(anchor="w", padx=18, pady=(16, 8))
+            top_emp = cont_empresa.most_common(8)
+            for i, (nome, qtd) in enumerate(top_emp):
+                row = tk.Frame(card_emp, bg=COR_WHITE)
+                row.pack(fill="x", padx=18, pady=3)
+                cor_nome = COR_TEXT_MUTED if nome.startswith("(") else COR_TEXT_DARK
+                cor_qtd = COR_ORANGE if i == 0 else COR_TEXT_DARK
+                tk.Label(row, text=nome, bg=COR_WHITE, fg=cor_nome,
+                         font=("Segoe UI", 10), anchor="w").pack(side="left", fill="x", expand=True)
+                tk.Label(row, text=str(qtd), bg=COR_WHITE, fg=cor_qtd,
+                         font=("Segoe UI", 11, "bold")).pack(side="right")
+            tk.Frame(card_emp, bg=COR_WHITE, height=10).pack()
+
+            # ===== MOTIVOS =====
+            card_mot = tk.Frame(body, bg=COR_WHITE, bd=1, relief="solid")
+            card_mot.pack(fill="x")
+            tk.Label(card_mot, text="Top motivos de pendência / falha",
+                     bg=COR_WHITE, fg=COR_TEXT_DARK,
+                     font=("Segoe UI", 12, "bold")).pack(anchor="w", padx=18, pady=(16, 10))
+            top_mot = cont_motivo.most_common(10)
+            if not top_mot:
+                tk.Label(card_mot, text="(nenhuma pendência registrada)",
+                         bg=COR_WHITE, fg=COR_TEXT_MUTED,
+                         font=("Segoe UI", 10)).pack(anchor="w", padx=18, pady=(0, 16))
+            else:
+                for qtd, motivo in [(q, m) for m, q in top_mot]:
+                    row = tk.Frame(card_mot, bg=COR_WHITE)
+                    row.pack(fill="x", padx=18, pady=4)
+                    # Badge laranja claro com a quantidade
+                    badge = tk.Label(
+                        row, text=str(qtd),
+                        bg=COR_BEIGE, fg=self._COR_BADGE_TXT,
+                        font=("Segoe UI", 10, "bold"),
+                        width=3, padx=4, pady=2,
+                    )
+                    badge.pack(side="left", padx=(0, 10))
+                    tk.Label(row, text=motivo,
+                             bg=COR_WHITE, fg=COR_TEXT_DARK,
+                             font=("Segoe UI", 10), anchor="w",
+                             wraplength=900, justify="left").pack(side="left", fill="x", expand=True)
+                tk.Frame(card_mot, bg=COR_WHITE, height=10).pack()
         except Exception as e:
-            linhas.append(f"\n⚠ Erro lendo planilha: {e}")
+            tk.Label(body, text=f"⚠ Erro lendo planilha: {e}",
+                     bg=COR_BEIGE, fg=COR_DANGER).pack(pady=20)
 
-        self._update_stats_text("\n".join(linhas))
+    def _stat_barra(self, parent, label, qtd, pct, cor):
+        """Linha com label/qtd e barra horizontal (trilha + preenchimento)."""
+        wrap = tk.Frame(parent, bg=COR_WHITE)
+        wrap.pack(fill="x", padx=18, pady=(0, 10))
 
-    def _update_stats_text(self, texto: str):
-        self.stats_text.configure(state="normal")
-        self.stats_text.delete("1.0", "end")
-        self.stats_text.insert("1.0", texto)
-        self.stats_text.configure(state="disabled")
+        cab = tk.Frame(wrap, bg=COR_WHITE)
+        cab.pack(fill="x", pady=(0, 4))
+        tk.Label(cab, text=label, bg=COR_WHITE, fg=COR_TEXT_DARK,
+                 font=("Segoe UI", 10)).pack(side="left")
+        valor_txt = f"{qtd} · {pct:.1f}%".replace(".", ",")
+        tk.Label(cab, text=valor_txt, bg=COR_WHITE, fg=COR_TEXT_MUTED,
+                 font=("Segoe UI", 10)).pack(side="right")
+
+        # Trilha + preenchimento via place (relwidth = proporção)
+        trilha = tk.Frame(wrap, bg=self._COR_TRILHA, height=9)
+        trilha.pack(fill="x")
+        trilha.pack_propagate(False)
+        if pct > 0:
+            fill = tk.Frame(trilha, bg=cor)
+            fill.place(relx=0, rely=0, relwidth=max(pct / 100, 0.02), relheight=1)
 
     # ---- Aba Regras (editor de regras.json) ---------------------
 
