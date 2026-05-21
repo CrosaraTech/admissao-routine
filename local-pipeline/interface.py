@@ -60,7 +60,7 @@ except ImportError:
 LOGO_PATH = Path(__file__).parent / "Logotipo Crosara - CMYK-04.jpg"
 
 from claude_client import ClaudeClient
-from ecotador_client import EContadorAPI
+from ecotador_client import AUDIT_FILE as ECONTADOR_AUDIT_FILE, EContadorAPI
 from gmail_client import GmailClient
 from main import (
     PAYLOADS_DIR, PLANILHA_ADMISSOES, PLANILHA_CBO, REGRAS_FILE,
@@ -202,6 +202,7 @@ class PipelineGUI(tk.Tk):
         self.tab_proc = tk.Frame(self.content_holder, bg=COR_BEIGE)
         self.tab_pend = tk.Frame(self.content_holder, bg=COR_BEIGE)
         self.tab_audit = tk.Frame(self.content_holder, bg=COR_BEIGE)
+        self.tab_api = tk.Frame(self.content_holder, bg=COR_BEIGE)
         self.tab_stats = tk.Frame(self.content_holder, bg=COR_BEIGE)
         self.tab_regras = tk.Frame(self.content_holder, bg=COR_BEIGE)
 
@@ -210,6 +211,7 @@ class PipelineGUI(tk.Tk):
             "processadas": self.tab_proc,
             "pendentes":   self.tab_pend,
             "auditoria":   self.tab_audit,
+            "api":         self.tab_api,
             "estatisticas": self.tab_stats,
             "regras":      self.tab_regras,
         }
@@ -218,6 +220,7 @@ class PipelineGUI(tk.Tk):
         self._build_processadas()
         self._build_pendentes()
         self._build_auditoria()
+        self._build_api_econtador()
         self._build_estatisticas()
         self._build_regras()
 
@@ -320,6 +323,7 @@ class PipelineGUI(tk.Tk):
             ("processadas", "Processadas"),
             ("pendentes",   "Pendentes"),
             ("auditoria",   "Auditoria"),
+            ("api",         "API eContador"),
             ("estatisticas", "Estatísticas"),
             ("regras",      "Regras"),
         ]
@@ -392,6 +396,7 @@ class PipelineGUI(tk.Tk):
             "processadas": "Admissões Processadas",
             "pendentes": "Admissões Pendentes",
             "auditoria": "Auditoria",
+            "api": "API eContador — Chamadas HTTP",
             "estatisticas": "Estatísticas",
             "regras": "Regras de Negócio",
         }
@@ -828,7 +833,9 @@ class PipelineGUI(tk.Tk):
             # Atualiza outras tabs também
             if hasattr(self, "tree_audit"):
                 self._refresh_auditoria()
-            if hasattr(self, "stats_text"):
+            if hasattr(self, "tree_api"):
+                self._refresh_api_econtador()
+            if hasattr(self, "stats_body"):
                 self._refresh_estatisticas()
         except Exception as e:
             self.gui_q.put(("log", f"⚠ Erro lendo planilha: {e}"))
@@ -1033,6 +1040,283 @@ class PipelineGUI(tk.Tk):
                 )
         except Exception as e:
             self.gui_q.put(("log", f"⚠ Erro lendo auditoria: {e}"))
+
+    # ---- Aba API eContador (auditoria das chamadas HTTP) ----------
+
+    def _build_api_econtador(self):
+        f = self.tab_api
+
+        # Toolbar
+        bar = tk.Frame(f, bg=COR_BEIGE)
+        bar.pack(fill="x", pady=(10, 8))
+        ttk.Button(bar, text="🔄  Atualizar", command=self._refresh_api_econtador).pack(side="left", padx=(0, 8))
+        ttk.Button(bar, text="👁  Ver JSON completo (seleção)",
+                   command=self._abrir_detalhe_api).pack(side="left", padx=8)
+        ttk.Button(bar, text="📂  Abrir arquivo audit",
+                   command=self._abrir_arquivo_audit).pack(side="left", padx=8)
+
+        # Filtro
+        self.filtro_api_var = tk.StringVar()
+        self.filtro_api_var.trace_add("write", lambda *a: self._refresh_api_econtador())
+        ttk.Label(bar, text="  Buscar:").pack(side="left", padx=(20, 4))
+        ttk.Entry(bar, textvariable=self.filtro_api_var, width=30).pack(side="left")
+
+        self.apenas_falhas_var = tk.BooleanVar(value=False)
+        self.apenas_falhas_var.trace_add("write", lambda *a: self._refresh_api_econtador())
+        ttk.Checkbutton(bar, text="Apenas falhas",
+                        variable=self.apenas_falhas_var).pack(side="left", padx=15)
+
+        # Contador resumido
+        self.api_resumo_var = tk.StringVar(value="—")
+        tk.Label(bar, textvariable=self.api_resumo_var,
+                 bg=COR_BEIGE, fg=COR_TEXT_MUTED,
+                 font=("Segoe UI", 9)).pack(side="right", padx=(0, 8))
+
+        tk.Label(f, text="(Clique 2× na linha pra ver o JSON completo BEFORE+AFTER)",
+                 bg=COR_BEIGE, fg=COR_TEXT_MUTED,
+                 font=("Segoe UI", 9)).pack(anchor="w", pady=(0, 5))
+
+        # Tabela
+        cols = ("ts", "corr_id", "operation", "status", "duration", "resumo")
+        self.tree_api = ttk.Treeview(f, columns=cols, show="headings", height=22)
+        headers = {
+            "ts":        ("Quando", 150),
+            "corr_id":   ("Corr ID", 80),
+            "operation": ("Operação", 150),
+            "status":    ("Status", 80),
+            "duration":  ("Duração", 80),
+            "resumo":    ("Resumo", 480),
+        }
+        for c, (txt, w) in headers.items():
+            self.tree_api.heading(c, text=txt)
+            self.tree_api.column(c, width=w, anchor="w")
+
+        sb = ttk.Scrollbar(f, orient="vertical", command=self.tree_api.yview)
+        self.tree_api.configure(yscrollcommand=sb.set)
+        self.tree_api.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+
+        self.tree_api.bind("<Double-1>", lambda e: self._abrir_detalhe_api())
+
+        # Tags por status
+        self.tree_api.tag_configure("ok",       background="#E8F5E9", foreground=COR_TEXT_DARK)
+        self.tree_api.tag_configure("fail",     background="#FFEBEE", foreground=COR_TEXT_DARK)
+        self.tree_api.tag_configure("slow",     background="#FFF8E1")
+        self.tree_api.tag_configure("orphan",   background="#F5F5F5")  # before sem after
+
+        # Cache pareado: corr_id → {"before": entry, "after": entry}
+        self._api_entries_cache: dict[str, dict] = {}
+
+    def _refresh_api_econtador(self):
+        if not hasattr(self, "tree_api"):
+            return
+        for item in self.tree_api.get_children():
+            self.tree_api.delete(item)
+
+        if not ECONTADOR_AUDIT_FILE.exists():
+            self.api_resumo_var.set("(econtador_audit.ndjson ainda não existe)")
+            self._api_entries_cache = {}
+            return
+
+        # Lê todas as linhas e agrupa por corr_id
+        pares: dict[str, dict] = {}
+        try:
+            with open(ECONTADOR_AUDIT_FILE, "r", encoding="utf-8") as fh:
+                for linha in fh:
+                    linha = linha.strip()
+                    if not linha:
+                        continue
+                    try:
+                        e = json.loads(linha)
+                    except json.JSONDecodeError:
+                        continue
+                    cid = e.get("corr_id") or ""
+                    phase = e.get("phase") or ""
+                    if not cid or phase not in ("before", "after"):
+                        continue
+                    pares.setdefault(cid, {})[phase] = e
+        except OSError as exc:
+            self.api_resumo_var.set(f"Erro lendo: {exc}")
+            return
+
+        self._api_entries_cache = pares
+
+        # Conta totais
+        total = len(pares)
+        falhas = sum(
+            1 for p in pares.values()
+            if "after" in p and not p["after"].get("success", True)
+        )
+        slow = sum(
+            1 for p in pares.values()
+            if "after" in p and (p["after"].get("duration_ms") or 0) >= 5000
+        )
+
+        # Filtros
+        filtro = (self.filtro_api_var.get() or "").strip().lower()
+        apenas_falhas = bool(self.apenas_falhas_var.get())
+
+        # Ordena por timestamp (do after se existir, senão before)
+        def _ts(par):
+            return (par.get("after") or par.get("before") or {}).get("timestamp", "")
+
+        ordenados = sorted(pares.items(), key=lambda kv: _ts(kv[1]), reverse=True)
+
+        mostrados = 0
+        for cid, par in ordenados:
+            before = par.get("before") or {}
+            after = par.get("after")
+            op = (before.get("operation")
+                  or (after.get("operation") if after else "?"))
+            ts_completo = _ts(par)
+            ts_display = ts_completo[:19].replace("T", " ") if ts_completo else "?"
+
+            if after is None:
+                # Orphan — só BEFORE
+                status_txt = "..."
+                tag = "orphan"
+                duration = "—"
+                resumo = "BEFORE sem AFTER (processo crashou?)"
+            else:
+                ok = bool(after.get("success"))
+                code = after.get("status_code", "?")
+                if ok:
+                    status_txt = f"✓ {code}"
+                    tag = "ok"
+                else:
+                    status_txt = f"✗ {code}"
+                    tag = "fail"
+                dur_ms = after.get("duration_ms")
+                duration = f"{dur_ms} ms" if dur_ms is not None else "—"
+                if dur_ms and dur_ms >= 5000 and tag == "ok":
+                    tag = "slow"
+                resumo = self._resumo_after(op, after, before)
+
+            if apenas_falhas and tag != "fail":
+                continue
+            hay = " ".join((ts_display, cid, op, status_txt, duration, resumo)).lower()
+            if filtro and filtro not in hay:
+                continue
+
+            self.tree_api.insert(
+                "", "end",
+                iid=cid,
+                values=(ts_display, cid, op, status_txt, duration, resumo[:200]),
+                tags=(tag,),
+            )
+            mostrados += 1
+
+        self.api_resumo_var.set(
+            f"{mostrados} chamada(s) visível(eis) | "
+            f"total {total} · falhas {falhas} · lentas (>5s) {slow}"
+        )
+
+    @staticmethod
+    def _resumo_after(op: str, after: dict, before: dict) -> str:
+        """Constrói o resumo da linha baseado na operação."""
+        if "EXCEPTION" in (after.get("exception") or "") or after.get("exception"):
+            return f"EXCEPTION: {after.get('exception')[:150]}"
+        if op == "POST /candidatos":
+            if after.get("success"):
+                snap = (after.get("input_snapshot") or {})
+                cid = after.get("candidato_id", "?")
+                return f"candidato_id={cid} | nome={snap.get('nome', '?')}"
+            body = after.get("body_preview") or ""
+            snap = (after.get("input_snapshot") or {})
+            return f"nome={snap.get('nome', '?')} | erro: {body[:120]}"
+        if op == "GET /empresas":
+            if after.get("success"):
+                if after.get("empresa_id"):
+                    return f"empresa_id={after['empresa_id']} | razão: {after.get('razao_social', '?')}"
+                return "0 resultados"
+            inp = before.get("input") or {}
+            return f"cnpj={inp.get('cnpj', '?')} | erro {after.get('status_code')}"
+        if op == "GET /departamentos":
+            if after.get("success"):
+                return f"{after.get('n_resultados', 0)} departamento(s)"
+            inp = before.get("input") or {}
+            return f"empresa_id={inp.get('empresa_id', '?')} | erro {after.get('status_code')}"
+        # Default
+        return str(after)[:120]
+
+    def _abrir_detalhe_api(self):
+        sel = self.tree_api.selection()
+        if not sel:
+            messagebox.showinfo("Selecione",
+                                "Selecione uma linha na tabela primeiro.")
+            return
+        cid = sel[0]
+        par = self._api_entries_cache.get(cid)
+        if not par:
+            messagebox.showinfo("Não encontrado", f"Sem dados pro corr_id {cid}")
+            return
+
+        # Modal com 2 painéis: BEFORE | AFTER
+        win = tk.Toplevel(self)
+        win.title(f"Auditoria eContador — corr_id {cid}")
+        win.geometry("1100x650")
+        win.transient(self)
+
+        before = par.get("before") or {}
+        after = par.get("after")
+
+        head = tk.Frame(win, bg=COR_WHITE, padx=15, pady=12)
+        head.pack(fill="x")
+        tk.Label(head, text=f"Operação: {before.get('operation') or (after or {}).get('operation', '?')}",
+                 font=("Segoe UI", 12, "bold"), bg=COR_WHITE).pack(anchor="w")
+        tk.Label(head, text=f"corr_id: {cid}",
+                 fg=COR_TEXT_MUTED, bg=COR_WHITE).pack(anchor="w")
+        if after:
+            ok = after.get("success")
+            cor = COR_SUCCESS if ok else COR_DANGER
+            tk.Label(head,
+                     text=f"Resultado: {'✓ SUCESSO' if ok else '✗ FALHA'} "
+                          f"(status {after.get('status_code', '?')}, "
+                          f"{after.get('duration_ms', '?')} ms)",
+                     fg=cor, bg=COR_WHITE,
+                     font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(4, 0))
+        else:
+            tk.Label(head, text="(sem AFTER — processo crashou antes de receber resposta?)",
+                     fg=COR_DANGER, bg=COR_WHITE).pack(anchor="w", pady=(4, 0))
+
+        body = tk.Frame(win, bg=COR_BEIGE)
+        body.pack(fill="both", expand=True, padx=10, pady=10)
+        body.grid_columnconfigure(0, weight=1)
+        body.grid_columnconfigure(1, weight=1)
+        body.grid_rowconfigure(0, weight=1)
+
+        # BEFORE panel
+        f_b = tk.Frame(body, bg=COR_WHITE, bd=1, relief="solid")
+        f_b.grid(row=0, column=0, sticky="nsew", padx=(0, 5))
+        tk.Label(f_b, text="BEFORE", font=("Segoe UI", 11, "bold"),
+                 bg=COR_WHITE, fg=COR_ORANGE).pack(anchor="w", padx=10, pady=(10, 5))
+        txt_b = scrolledtext.ScrolledText(f_b, font=("Consolas", 9), wrap="none")
+        txt_b.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        txt_b.insert("1.0", json.dumps(before, ensure_ascii=False, indent=2))
+        txt_b.configure(state="disabled")
+
+        # AFTER panel
+        f_a = tk.Frame(body, bg=COR_WHITE, bd=1, relief="solid")
+        f_a.grid(row=0, column=1, sticky="nsew", padx=(5, 0))
+        tk.Label(f_a, text="AFTER", font=("Segoe UI", 11, "bold"),
+                 bg=COR_WHITE, fg=COR_SUCCESS if (after and after.get("success")) else COR_DANGER
+                 ).pack(anchor="w", padx=10, pady=(10, 5))
+        txt_a = scrolledtext.ScrolledText(f_a, font=("Consolas", 9), wrap="none")
+        txt_a.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        if after:
+            txt_a.insert("1.0", json.dumps(after, ensure_ascii=False, indent=2))
+        else:
+            txt_a.insert("1.0", "(sem registro de AFTER)")
+        txt_a.configure(state="disabled")
+
+        ttk.Button(win, text="Fechar", command=win.destroy).pack(pady=10)
+
+    def _abrir_arquivo_audit(self):
+        if ECONTADOR_AUDIT_FILE.exists():
+            import os
+            os.startfile(ECONTADOR_AUDIT_FILE)
+        else:
+            messagebox.showinfo("Sem arquivo", "econtador_audit.ndjson ainda não foi criado (nenhuma chamada eContador feita ainda).")
 
     # ---- Aba Estatísticas (redesign com cards + barras) -----------
 
