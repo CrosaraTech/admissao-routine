@@ -96,6 +96,11 @@ class Config:
     # 3+ = ensemble. Múltiplas chamadas mitigam casos em que o Claude
     # eventualmente perde campos visíveis (ex: RG em foto rotacionada).
     claude_chamadas_verificacao: int
+    # Quando True (default), pendências de CLIENTE viram reply automático
+    # no thread original pedindo o que falta. Quando False, NÃO manda email
+    # — DP resolve manualmente via interface gráfica (aba Pendentes).
+    # Pendências INTERNAS nunca mandam email (sempre manual via UI/eContador).
+    auto_email_pendencias: bool
     # ─── TEMP-CONFIRMAR-REPLIES (REMOVER em produção) ───────────
     # Default LIGADO durante calibração: pergunta confirmação antes
     # de enviar cada email de pendência. Auto-desligado quando o
@@ -127,6 +132,7 @@ def carregar_config() -> Config:
         claude_model=anthropic_cfg.get("model", "claude-sonnet-4-20250514"),
         claude_max_tokens=int(anthropic_cfg.get("max_tokens", 8192)),
         claude_chamadas_verificacao=int(anthropic_cfg.get("chamadas_verificacao", 2)),
+        auto_email_pendencias=bool(raw.get("auto_email_pendencias", True)),
     )
 
 
@@ -1069,7 +1075,13 @@ def _finalizar_lote(
 
         # Reply no thread — só se há algo a comunicar ao cliente. Inclui
         # sucessos, falhas_cliente e menciona pendências internas suavemente.
-        if msg_pra_resposta and (sucessos or falhas_cliente or falhas_internas):
+        # DESLIGADO quando config.auto_email_pendencias=False — DP resolve
+        # manualmente via UI; planilha registra tudo igual.
+        if (
+            msg_pra_resposta
+            and config.auto_email_pendencias
+            and (sucessos or falhas_cliente or falhas_internas)
+        ):
             try:
                 corpo = _corpo_reply_lote(resultados)
                 if config.confirmar_replies and not _confirmar_envio(

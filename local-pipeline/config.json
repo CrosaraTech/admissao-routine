@@ -17,5 +17,6 @@
     "chamadas_verificacao": 2
   },
   "polling_intervalo_segundos": 300,
-  "dry_run": false
+  "dry_run": false,
+  "auto_email_pendencias": true
 }
