@@ -229,17 +229,29 @@ def registrar_admissao_planilha(
     empresa: str | None,
     cnpj: str | None,
     procedencia: str,
+    msg_id: str = "",
+    ts: str | None = None,
 ) -> None:
     """Append uma linha em admissoes.xlsx. Cria com cabeçalho se não existir.
 
-    4 colunas: Nome do colaborador | Empresa | CNPJ | Procedência.
-    Append-only — cada execução pode adicionar várias linhas (1 por admissão
-    processada, sucesso ou pendência).
+    6 colunas: Data/Hora | Nome | Empresa | CNPJ | Procedência | msg_id.
+    A coluna msg_id é o ID da mensagem do Gmail (usada pra reprocessar
+    pela UI e abrir o thread no Gmail). Pode ser vazia em casos de
+    fallback ou linhas adicionadas manualmente.
+
+    Append-only — cada execução pode adicionar várias linhas (1 por
+    admissão processada, sucesso ou pendência).
+
+    Migração: se a planilha existente tem só 4 colunas (versão antiga),
+    novas linhas são escritas com 6 colunas e o openpyxl preserva as
+    antigas como estão.
     """
     from openpyxl import Workbook, load_workbook
     from openpyxl.styles import Alignment, Font, PatternFill
 
-    headers = ["Nome do colaborador", "Empresa", "CNPJ", "Procedência"]
+    headers = ["Data/Hora", "Nome do colaborador", "Empresa", "CNPJ", "Procedência", "msg_id"]
+    timestamp = ts or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
     try:
         if PLANILHA_ADMISSOES.exists():
             wb = load_workbook(PLANILHA_ADMISSOES)
@@ -249,29 +261,87 @@ def registrar_admissao_planilha(
             ws = wb.active
             ws.title = "admissoes"
             ws.append(headers)
-            # Estilo do cabeçalho
             hfont = Font(bold=True, color="FFFFFF")
             hfill = PatternFill(start_color="305496", end_color="305496", fill_type="solid")
-            for col in range(1, 5):
+            for col in range(1, len(headers) + 1):
                 c = ws.cell(row=1, column=col)
                 c.font = hfont
                 c.fill = hfill
                 c.alignment = Alignment(horizontal="center")
-            ws.column_dimensions["A"].width = 35
-            ws.column_dimensions["B"].width = 35
-            ws.column_dimensions["C"].width = 20
-            ws.column_dimensions["D"].width = 50
+            # Larguras: data/hora, nome, empresa, cnpj, procedência, msg_id (estreito)
+            larguras = {"A": 18, "B": 32, "C": 32, "D": 18, "E": 50, "F": 18}
+            for col, w in larguras.items():
+                ws.column_dimensions[col].width = w
             ws.freeze_panes = "A2"
 
         ws.append([
+            timestamp,
             (nome or "?").strip(),
             (empresa or "?").strip(),
             (cnpj or "?").strip(),
             procedencia.strip(),
+            (msg_id or "").strip(),
         ])
         wb.save(PLANILHA_ADMISSOES)
     except Exception as e:
         log.warning(f"Falha gravando admissoes.xlsx: {e}")
+
+
+def sum_billing_mes_atual() -> dict:
+    """Soma o billing do mês corrente lendo billing.ndjson.
+
+    Retorna {n_passadas, n_calls, input_tokens, output_tokens, custo_usd}.
+    Tudo zero se o arquivo não existe.
+    """
+    out = {"n_passadas": 0, "n_calls": 0, "input_tokens": 0, "output_tokens": 0, "custo_usd": 0.0}
+    if not BILLING_FILE.exists():
+        return out
+    mes_atual = datetime.now().strftime("%Y-%m")
+    try:
+        with open(BILLING_FILE, "r", encoding="utf-8") as f:
+            for linha in f:
+                try:
+                    e = json.loads(linha)
+                except json.JSONDecodeError:
+                    continue
+                ts = e.get("timestamp", "")
+                if not ts.startswith(mes_atual):
+                    continue
+                out["n_passadas"] += 1
+                out["n_calls"] += int(e.get("n_calls") or 0)
+                out["input_tokens"] += int(e.get("input_tokens") or 0)
+                out["output_tokens"] += int(e.get("output_tokens") or 0)
+                out["custo_usd"] += float(e.get("custo_usd") or 0)
+    except OSError as e:
+        log.warning(f"Erro lendo billing.ndjson: {e}")
+    out["custo_usd"] = round(out["custo_usd"], 4)
+    return out
+
+
+def fazer_backup_planilha_e_payloads() -> Path | None:
+    """Copia admissoes.xlsx + payloads/ pra pasta backups/<data>/.
+
+    Retorna o path do backup criado, ou None se houver erro.
+    """
+    try:
+        backup_root = ROOT / "backups"
+        backup_root.mkdir(exist_ok=True)
+        carimbo = datetime.now().strftime("%Y%m%d_%H%M%S")
+        dest = backup_root / carimbo
+        dest.mkdir()
+
+        if PLANILHA_ADMISSOES.exists():
+            shutil.copy2(PLANILHA_ADMISSOES, dest / PLANILHA_ADMISSOES.name)
+        if BILLING_FILE.exists():
+            shutil.copy2(BILLING_FILE, dest / BILLING_FILE.name)
+        if PAYLOADS_DIR.exists():
+            shutil.copytree(PAYLOADS_DIR, dest / "payloads", dirs_exist_ok=True)
+
+        log.info(f"💾 Backup criado em {dest}")
+        return dest
+    except Exception as e:
+        log.exception(f"Falha criando backup: {e}")
+        return None
 
 
 def salvar_payload(
@@ -1100,13 +1170,15 @@ def _finalizar_lote(
             except Exception:
                 log.exception("Falha enviando reply consolidado")
 
-    # Planilha de admissões — 1 linha por funcionário, sucesso ou pendência
+    # Planilha de admissões — 1 linha por funcionário, sucesso ou pendência.
+    # msg_id permite reprocessar pela UI e abrir o thread no Gmail.
     for r in resultados:
         registrar_admissao_planilha(
             nome=r.get("nome"),
             empresa=r.get("razao_social"),
             cnpj=r.get("cnpj_empresa"),
             procedencia=_procedencia_de(r),
+            msg_id=msg_id,
         )
     log.info(f"   📊 Planilha admissoes.xlsx atualizada (+{len(resultados)} linha(s))")
 
@@ -1365,6 +1437,7 @@ def _processar_seguro(
                 empresa=None,
                 cnpj=None,
                 procedencia=f"Falha técnica orquestrador — {str(e)[:120]}",
+                msg_id=msg_id,
             )
         except Exception:
             log.exception("Falha registrando linha de erro na planilha")

@@ -28,11 +28,18 @@ load_dotenv()
 
 from claude_client import ClaudeClient
 from ecotador_client import EContadorAPI
+from gmail_client import GmailClient
 from main import (
     PAYLOADS_DIR, PLANILHA_ADMISSOES, PLANILHA_CBO,
     bootstrap_arquivos_locais, carregar_config, carregar_planilha,
-    carregar_regras, registrar_admissao_planilha, rodar_uma_passada,
+    carregar_regras, fazer_backup_planilha_e_payloads,
+    registrar_admissao_planilha, rodar_uma_passada,
+    sum_billing_mes_atual,
 )
+
+
+# Dias após os quais uma pendência é considerada "velha" → highlight visual
+DIAS_PENDENCIA_VELHA = 3
 
 
 # ============================================================
@@ -92,6 +99,15 @@ class PipelineGUI(tk.Tk):
         self.intervalo_var = tk.IntVar(value=self.config.intervalo)
         self.contador_proc_var = tk.StringVar(value="0")
         self.contador_pend_var = tk.StringVar(value="0")
+        self.contador_velha_var = tk.StringVar(value="0")
+        self.billing_var = tk.StringVar(value="US$ 0.0000 / mês")
+        # Limite mensal de billing pra alerta visual (default 50 USD)
+        self.billing_limite_usd = 50.0
+        # Filtros de busca por tab
+        self.filtro_proc_var = tk.StringVar()
+        self.filtro_pend_var = tk.StringVar()
+        self.filtro_proc_var.trace_add("write", lambda *a: self._refresh_tabelas())
+        self.filtro_pend_var.trace_add("write", lambda *a: self._refresh_tabelas())
 
     # ---- Construção das abas -----------------------------------
 
@@ -134,7 +150,16 @@ class PipelineGUI(tk.Tk):
                   foreground="#2e7d32").pack(side="left", padx=(0, 25))
         ttk.Label(f_cnt, text="⚠ Pendentes: ").pack(side="left")
         ttk.Label(f_cnt, textvariable=self.contador_pend_var, font=("Segoe UI", 11, "bold"),
-                  foreground="#c62828").pack(side="left")
+                  foreground="#c62828").pack(side="left", padx=(0, 25))
+        ttk.Label(f_cnt, text=f"🕒 Pendência >{DIAS_PENDENCIA_VELHA}d: ").pack(side="left")
+        ttk.Label(f_cnt, textvariable=self.contador_velha_var, font=("Segoe UI", 11, "bold"),
+                  foreground="#e65100").pack(side="left", padx=(0, 25))
+        ttk.Label(f_cnt, text="💰 Custo Claude: ").pack(side="left")
+        self.billing_label = ttk.Label(
+            f_cnt, textvariable=self.billing_var, font=("Segoe UI", 11, "bold"),
+            foreground="#1565c0",
+        )
+        self.billing_label.pack(side="left")
 
         # Linha 3 — Controles
         f_ctrl = ttk.LabelFrame(self.tab_main, text="Controle", padding=12)
@@ -146,6 +171,7 @@ class PipelineGUI(tk.Tk):
         self.btn_parar.pack(side="left", padx=5)
         ttk.Button(f_ctrl, text="🔄  Rodar 1 passada agora", command=self._rodar_unica).pack(side="left", padx=5)
         ttk.Button(f_ctrl, text="📊  Atualizar tabelas", command=self._refresh_tabelas).pack(side="left", padx=5)
+        ttk.Button(f_ctrl, text="💾  Backup agora", command=self._backup_agora).pack(side="left", padx=5)
 
         # Linha 4 — Configurações
         f_set = ttk.LabelFrame(self.tab_main, text="Configurações", padding=12)
@@ -185,15 +211,22 @@ class PipelineGUI(tk.Tk):
         bar.pack(fill="x", pady=(0, 8))
         ttk.Button(bar, text="🔄  Atualizar", command=self._refresh_tabelas).pack(side="left", padx=5)
         ttk.Button(bar, text="📂  Abrir payloads/", command=self._abrir_pasta_payloads).pack(side="left", padx=5)
+        ttk.Button(bar, text="📧  Abrir email no Gmail",
+                   command=lambda: self._abrir_email_gmail(self.tree_proc)).pack(side="left", padx=5)
+
+        # Filtro de busca
+        ttk.Label(bar, text="  Buscar:").pack(side="left", padx=(20, 4))
+        ttk.Entry(bar, textvariable=self.filtro_proc_var, width=30).pack(side="left")
 
         # Tabela
-        cols = ("nome", "empresa", "cnpj", "procedencia")
+        cols = ("ts", "nome", "empresa", "cnpj", "procedencia")
         self.tree_proc = ttk.Treeview(f, columns=cols, show="headings", height=22)
         headers = {
-            "nome": ("Nome do colaborador", 280),
-            "empresa": ("Empresa", 250),
-            "cnpj": ("CNPJ", 150),
-            "procedencia": ("Procedência", 500),
+            "ts": ("Data/Hora", 140),
+            "nome": ("Nome do colaborador", 240),
+            "empresa": ("Empresa", 220),
+            "cnpj": ("CNPJ", 140),
+            "procedencia": ("Procedência", 460),
         }
         for c, (txt, w) in headers.items():
             self.tree_proc.heading(c, text=txt)
@@ -213,19 +246,29 @@ class PipelineGUI(tk.Tk):
         bar.pack(fill="x", pady=(0, 8))
         ttk.Button(bar, text="🔧  Resolver pendência selecionada",
                    command=self._resolver_selecionada).pack(side="left", padx=5)
+        ttk.Button(bar, text="🔁  Reprocessar (remove label e re-roda)",
+                   command=self._reprocessar_selecionada).pack(side="left", padx=5)
+        ttk.Button(bar, text="📧  Abrir email no Gmail",
+                   command=lambda: self._abrir_email_gmail(self.tree_pend)).pack(side="left", padx=5)
         ttk.Button(bar, text="🔄  Atualizar", command=self._refresh_tabelas).pack(side="left", padx=5)
-        ttk.Label(bar, text="  (clique 2x na linha pra resolver)",
-                  foreground="#666").pack(side="left", padx=10)
+
+        # Filtro de busca
+        ttk.Label(bar, text="  Buscar:").pack(side="left", padx=(20, 4))
+        ttk.Entry(bar, textvariable=self.filtro_pend_var, width=30).pack(side="left")
+
+        ttk.Label(f, text="(clique 2× na linha pra resolver — linhas amarelas/laranjas = pendência >3 dias)",
+                  foreground="#666").pack(anchor="w", pady=(0, 5))
 
         # Tabela
-        cols = ("nome", "empresa", "cnpj", "tipo", "procedencia")
+        cols = ("ts", "nome", "empresa", "cnpj", "tipo", "procedencia")
         self.tree_pend = ttk.Treeview(f, columns=cols, show="headings", height=22)
         headers = {
-            "nome": ("Nome do colaborador", 220),
-            "empresa": ("Empresa", 220),
+            "ts": ("Data/Hora", 130),
+            "nome": ("Nome do colaborador", 200),
+            "empresa": ("Empresa", 200),
             "cnpj": ("CNPJ", 130),
-            "tipo": ("Tipo", 90),
-            "procedencia": ("Procedência / motivo", 500),
+            "tipo": ("Tipo", 80),
+            "procedencia": ("Procedência / motivo", 440),
         }
         for c, (txt, w) in headers.items():
             self.tree_pend.heading(c, text=txt)
@@ -238,9 +281,11 @@ class PipelineGUI(tk.Tk):
 
         self.tree_pend.bind("<Double-1>", lambda e: self._resolver_selecionada())
 
-        # Cores por tipo
+        # Cores por tipo + idade
         self.tree_pend.tag_configure("interno", background="#fff3e0")
         self.tree_pend.tag_configure("cliente", background="#e3f2fd")
+        self.tree_pend.tag_configure("velha_interno", background="#ffab40", foreground="#000")
+        self.tree_pend.tag_configure("velha_cliente", background="#ffd180", foreground="#000")
 
     # ---- Consumidor da fila thread→UI --------------------------
 
@@ -357,14 +402,19 @@ class PipelineGUI(tk.Tk):
     # ---- Atualização das tabelas -------------------------------
 
     def _refresh_tabelas(self):
-        """Lê admissoes.xlsx e popula as 2 tabelas."""
+        """Lê admissoes.xlsx, popula as 2 tabelas, aplica filtros,
+        destaca pendências velhas, atualiza contadores e billing."""
         for tv in (self.tree_proc, self.tree_pend):
             for item in tv.get_children():
                 tv.delete(item)
 
+        # Atualiza billing/limite
+        self._atualizar_billing()
+
         if not PLANILHA_ADMISSOES.exists():
             self.contador_proc_var.set("0")
             self.contador_pend_var.set("0")
+            self.contador_velha_var.set("0")
             return
 
         try:
@@ -375,35 +425,170 @@ class PipelineGUI(tk.Tk):
             if len(rows) <= 1:
                 self.contador_proc_var.set("0")
                 self.contador_pend_var.set("0")
+                self.contador_velha_var.set("0")
                 return
+
+            filtro_p = (self.filtro_proc_var.get() or "").strip().lower()
+            filtro_e = (self.filtro_pend_var.get() or "").strip().lower()
+            hoje = datetime.now()
 
             n_proc = 0
             n_pend = 0
-            # Itera invertido pra mostrar mais recentes no topo
+            n_velha = 0
             for row in reversed(rows[1:]):
                 if not row or not any(row):
                     continue
-                nome, empresa, cnpj, procedencia = ((row + ("",) * 4)[:4])
+                # 6 colunas (novas) ou 4 (legacy): detecta
+                cols = list(row) + [""] * (6 - len(row))
+                # Heurística: se primeira coluna parece data (tem '-' ou ':'),
+                # é planilha nova. Senão é legacy (4 cols: nome,empresa,cnpj,proc).
+                primeira = str(cols[0] or "")
+                if ("-" in primeira and ":" in primeira) or primeira == "":
+                    ts, nome, empresa, cnpj, procedencia, msg_id = cols[:6]
+                else:
+                    nome, empresa, cnpj, procedencia = cols[:4]
+                    ts = ""
+                    msg_id = ""
+
+                ts = str(ts or "")
                 nome = str(nome or "")
                 empresa = str(empresa or "")
                 cnpj = str(cnpj or "")
                 procedencia = str(procedencia or "")
+                msg_id = str(msg_id or "")
                 proc_low = procedencia.lower()
 
+                # Concatena tudo pra match de filtro
+                hay_texto = " ".join((ts, nome, empresa, cnpj, procedencia)).lower()
+
                 if proc_low.startswith("cadastrado") or proc_low.startswith("dry-run"):
-                    self.tree_proc.insert("", "end", values=(nome, empresa, cnpj, procedencia))
+                    if filtro_p and filtro_p not in hay_texto:
+                        continue
+                    self.tree_proc.insert(
+                        "", "end",
+                        values=(ts, nome, empresa, cnpj, procedencia),
+                        tags=(msg_id,),  # tag carrega msg_id pra "Abrir email"
+                    )
                     n_proc += 1
                 elif proc_low.startswith("pendente") or proc_low.startswith("falha"):
+                    if filtro_e and filtro_e not in hay_texto:
+                        continue
                     tipo = "interno" if "interno" in proc_low else "cliente"
-                    self.tree_pend.insert("", "end",
-                                          values=(nome, empresa, cnpj, tipo, procedencia),
-                                          tags=(tipo,))
+                    # Detecta pendência velha
+                    velha = False
+                    try:
+                        dt_row = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
+                        if (hoje - dt_row).days >= DIAS_PENDENCIA_VELHA:
+                            velha = True
+                            n_velha += 1
+                    except (ValueError, TypeError):
+                        pass
+                    tags = [tipo, msg_id]
+                    if velha:
+                        tags.append(f"velha_{tipo}")
+                    self.tree_pend.insert(
+                        "", "end",
+                        values=(ts, nome, empresa, cnpj, tipo, procedencia),
+                        tags=tags,
+                    )
                     n_pend += 1
 
             self.contador_proc_var.set(str(n_proc))
             self.contador_pend_var.set(str(n_pend))
+            self.contador_velha_var.set(str(n_velha))
         except Exception as e:
             self.gui_q.put(("log", f"⚠ Erro lendo planilha: {e}"))
+
+    def _atualizar_billing(self):
+        """Lê billing.ndjson e atualiza display + cor (alerta se >= limite)."""
+        try:
+            resumo = sum_billing_mes_atual()
+            custo = resumo["custo_usd"]
+            self.billing_var.set(
+                f"US$ {custo:.4f} / mês "
+                f"({resumo['n_calls']} chamadas, {resumo['n_passadas']} passadas)"
+            )
+            # Cor: verde < 50% limite, laranja 50-100%, vermelho > 100%
+            if custo >= self.billing_limite_usd:
+                self.billing_label.configure(foreground="#c62828")
+            elif custo >= self.billing_limite_usd * 0.5:
+                self.billing_label.configure(foreground="#e65100")
+            else:
+                self.billing_label.configure(foreground="#1565c0")
+        except Exception:
+            pass
+
+    def _msg_id_from_selection(self, tree: ttk.Treeview) -> str | None:
+        sel = tree.selection()
+        if not sel:
+            return None
+        tags = tree.item(sel[0])["tags"] or []
+        # tags pode ter "interno"/"cliente"/"velha_*" + msg_id
+        for t in tags:
+            t = str(t)
+            if t and t not in ("interno", "cliente", "velha_interno", "velha_cliente"):
+                return t
+        return None
+
+    def _abrir_email_gmail(self, tree: ttk.Treeview):
+        msg_id = self._msg_id_from_selection(tree)
+        if not msg_id:
+            messagebox.showinfo("Selecione",
+                                "Selecione uma linha primeiro.\n\n"
+                                "(Linhas antigas — antes do timestamp/msg_id — não conseguem abrir.)")
+            return
+        import webbrowser
+        url = f"https://mail.google.com/mail/u/0/#all/{msg_id}"
+        webbrowser.open(url)
+
+    def _reprocessar_selecionada(self):
+        msg_id = self._msg_id_from_selection(self.tree_pend)
+        if not msg_id:
+            messagebox.showinfo("Selecione",
+                                "Selecione uma pendência com msg_id (planilha nova).\n\n"
+                                "Linhas legacy precisam ser resolvidas com os outros botões.")
+            return
+        if not messagebox.askyesno(
+            "Confirmar reprocessar",
+            "Vou:\n"
+            "  1. Remover labels processado/pendente da mensagem no Gmail\n"
+            "  2. Rodar uma passada agora pra que o pipeline pegue de novo\n\n"
+            "Confirma?"
+        ):
+            return
+        threading.Thread(
+            target=self._reprocessar_worker, args=(msg_id,), daemon=True
+        ).start()
+
+    def _reprocessar_worker(self, msg_id: str):
+        self.gui_q.put(("log", f"🔁 Reprocessando msg {msg_id[:16]}..."))
+        try:
+            gmail = GmailClient()
+            for lbl in (self.config.label_processado, self.config.label_pendente):
+                try:
+                    gmail.remover_label(msg_id, lbl)
+                except Exception:
+                    pass
+            self.gui_q.put(("log", "   ✓ Labels removidas — rodando passada..."))
+            rodar_uma_passada(self.config, self.claude, self.planilha)
+            self.gui_q.put(("log", "✓ Reprocessamento concluído"))
+        except Exception as e:
+            self.gui_q.put(("log", f"❌ Erro reprocessando: {e}"))
+        self.gui_q.put(("refresh", None))
+
+    def _backup_agora(self):
+        threading.Thread(target=self._backup_worker, daemon=True).start()
+
+    def _backup_worker(self):
+        self.gui_q.put(("log", "💾 Criando backup..."))
+        try:
+            dest = fazer_backup_planilha_e_payloads()
+            if dest:
+                self.gui_q.put(("log", f"✓ Backup criado em {dest}"))
+            else:
+                self.gui_q.put(("log", "❌ Falha criando backup"))
+        except Exception as e:
+            self.gui_q.put(("log", f"❌ Erro no backup: {e}"))
 
     # ---- Resolver pendência ------------------------------------
 

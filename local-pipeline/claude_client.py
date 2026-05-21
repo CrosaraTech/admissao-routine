@@ -437,10 +437,18 @@ class ClaudeClient:
 
         log.info(f"Enviando {len(content)} blocos pro Claude ({self.model})")
 
+        # System prompt com cache_control: ~6KB de briefing estável fica
+        # em cache da Anthropic por ~5min. Chamadas dentro desse intervalo
+        # pagam 0.10× pelo input tokens cacheados (write é 1.25×, read 0.10×).
+        # Em pipelines com várias admissões seguidas, economia de 50-70%.
         msg = self.client.messages.create(
             model=self.model,
             max_tokens=self.max_tokens,
-            system=self.system_prompt,
+            system=[{
+                "type": "text",
+                "text": self.system_prompt,
+                "cache_control": {"type": "ephemeral"},
+            }],
             messages=[{"role": "user", "content": content}],
         )
         self._ts_ultima_chamada = time.time()
