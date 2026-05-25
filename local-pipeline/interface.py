@@ -59,6 +59,37 @@ except ImportError:
 
 LOGO_PATH = Path(__file__).parent / "Logotipo Crosara - CMYK-04.jpg"
 
+
+# ============================================================
+# Paleta dark mode (slots espelham os do tema light)
+# ============================================================
+
+# Mapeamento por "slot" — cada cor da paleta light tem uma equivalente dark.
+# O toggle dark mode varre o widget tree e troca bg/fg por essa correspondência.
+_PALETA_LIGHT = {
+    "main_bg":     COR_BEIGE,        # #F4DDC8
+    "card_bg":     COR_WHITE,        # #FFFFFF
+    "sidebar_bg":  COR_NAVY,         # #344E5C
+    "log_bg":      COR_NAVY_DARK,    # #2A4050
+    "sub_bg":      COR_BEIGE_DARK,   # #E8C9AE
+    "text_dark":   COR_TEXT_DARK,    # #2A4050
+    "text_light":  COR_TEXT_LIGHT,   # #F4DDC8
+    "text_muted":  COR_TEXT_MUTED,   # #7A8896
+    "border":      COR_BORDER,       # #D8C5AE
+}
+
+_PALETA_DARK = {
+    "main_bg":     "#1E2128",
+    "card_bg":     "#2A2D34",
+    "sidebar_bg":  "#161922",
+    "log_bg":      "#0F1117",
+    "sub_bg":      "#252830",
+    "text_dark":   "#E8E8E8",
+    "text_light":  "#F4DDC8",       # accent claro mantém pra brilho
+    "text_muted":  "#9098A4",
+    "border":      "#3D404A",
+}
+
 from claude_client import ClaudeClient
 from ecotador_client import AUDIT_FILE as ECONTADOR_AUDIT_FILE, EContadorAPI
 from gmail_client import GmailClient
@@ -1667,24 +1698,99 @@ class PipelineGUI(tk.Tk):
         popup.after(6000, popup.destroy)
 
     def _toggle_dark_mode(self):
+        """Aplica paleta dark/light varrendo TODO o widget tree (tk) +
+        ttk.Style. Mapeia bg/fg por correspondência slot-a-slot entre
+        _PALETA_LIGHT e _PALETA_DARK.
+
+        Limitação conhecida: widgets criados DEPOIS do toggle (ex: dialog
+        Resolver Pendência aberto depois de ativar dark) começam em light.
+        Pra contornar, abrir e fechar dialogs sob o tema escolhido.
+        """
         is_dark = bool(self.dark_mode_var.get())
-        style = ttk.Style()
+        pal_atual = _PALETA_DARK if is_dark else _PALETA_LIGHT
+        pal_outro = _PALETA_LIGHT if is_dark else _PALETA_DARK
+
+        # Constrói mapa: cor_atual_no_outro_palette → cor_no_palette_alvo
+        # (mais cores adicionais que aparecem em ambos como "acentos" puros
+        # — ex: COR_ORANGE — não entram no map, ficam intactos)
+        bg_map: dict[str, str] = {}
+        fg_map: dict[str, str] = {}
+        for slot, novo in pal_atual.items():
+            antigo = pal_outro[slot]
+            if antigo == novo:
+                continue
+            # bg slots
+            if slot in ("main_bg", "card_bg", "sidebar_bg", "log_bg", "sub_bg"):
+                bg_map[antigo] = novo
+            # fg slots
+            elif slot in ("text_dark", "text_light", "text_muted"):
+                fg_map[antigo] = novo
+
+        # Caso especial: foreground do log_text que era COR_BEIGE
+        # (cor "text_light" no contexto do log)
         if is_dark:
-            bg, fg, sel = "#1e1e1e", "#d4d4d4", "#264f78"
-            try:
-                style.theme_use("clam")
-            except tk.TclError:
-                pass
-            style.configure("Treeview", background=bg, foreground=fg, fieldbackground=bg)
-            style.configure("Treeview.Heading", background="#2d2d2d", foreground=fg)
-            style.map("Treeview", background=[("selected", sel)])
-            self.configure(background=bg)
+            fg_map[COR_BEIGE] = pal_atual["text_light"]
         else:
-            style.theme_use(style.theme_names()[0])  # default
-            style.configure("Treeview", background="white", foreground="black", fieldbackground="white")
-            style.configure("Treeview.Heading", background="#f0f0f0", foreground="black")
-            self.configure(background="SystemButtonFace")
-        self.gui_q.put(("log", f"🎨 Modo {'escuro' if is_dark else 'claro'} ativado"))
+            fg_map[_PALETA_DARK["text_light"]] = COR_BEIGE
+
+        # Caminha recursivamente, trocando bg/fg
+        def remapear(w):
+            for attr, mapa in (("bg", bg_map), ("background", bg_map),
+                                ("fg", fg_map), ("foreground", fg_map)):
+                try:
+                    cur = str(w.cget(attr))
+                except tk.TclError:
+                    continue
+                if cur in mapa:
+                    try:
+                        w.configure({attr: mapa[cur]})
+                    except tk.TclError:
+                        pass
+            for child in w.winfo_children():
+                remapear(child)
+
+        remapear(self)
+
+        # ttk styles — reconfigura cores baseadas na paleta atual
+        style = ttk.Style()
+        p = pal_atual
+        style.configure("TFrame", background=p["main_bg"])
+        style.configure("TLabel", background=p["main_bg"], foreground=p["text_dark"])
+        style.configure("TLabelframe", background=p["main_bg"], foreground=p["text_dark"])
+        style.configure("TLabelframe.Label", background=p["main_bg"], foreground=p["text_dark"])
+        style.configure("Card.TFrame", background=p["card_bg"])
+        style.configure("Card.TLabel", background=p["card_bg"], foreground=p["text_dark"])
+        style.configure("TCheckbutton", background=p["main_bg"], foreground=p["text_dark"])
+        style.map("TCheckbutton",
+                  background=[("active", p["main_bg"])],
+                  foreground=[("active", p["text_dark"])])
+        style.configure("TButton", background=p["card_bg"], foreground=p["text_dark"])
+        style.map("TButton",
+                  background=[("active", p["sub_bg"])],
+                  foreground=[("active", p["text_dark"])])
+        style.configure("Treeview",
+                        background=p["card_bg"], fieldbackground=p["card_bg"],
+                        foreground=p["text_dark"])
+        style.configure("Treeview.Heading",
+                        background=p["sidebar_bg"], foreground=COR_WHITE)
+        style.configure("TEntry",
+                        fieldbackground=p["card_bg"], foreground=p["text_dark"])
+        style.configure("TSpinbox",
+                        fieldbackground=p["card_bg"], foreground=p["text_dark"])
+        style.configure("TCombobox",
+                        fieldbackground=p["card_bg"], foreground=p["text_dark"])
+
+        # Atualiza nav buttons do sidebar (cores explícitas — não vêm via ttk)
+        if hasattr(self, "_nav_buttons"):
+            sidebar_bg = p["sidebar_bg"]
+            for k, btn in self._nav_buttons.items():
+                # Botão ativo (laranja) mantém. Inativos seguem a paleta.
+                if str(btn.cget("bg")) != COR_ORANGE:
+                    btn.configure(bg=sidebar_bg, fg=p["text_light"],
+                                  activebackground=COR_NAVY_HOVER if not is_dark else "#2A2D34",
+                                  activeforeground=COR_WHITE)
+
+        self.gui_q.put(("log", f"Modo {'escuro' if is_dark else 'claro'} ativado"))
 
     # ---- Resolver pendência ------------------------------------
 
