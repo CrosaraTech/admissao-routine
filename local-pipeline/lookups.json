@@ -1,0 +1,253 @@
+{
+  "_versao": "2.0 — baseado na investigação massiva 194+ attributes (08/05/2026)",
+  "estados": {
+    "AC": "1",
+    "AL": "2",
+    "AP": "3",
+    "AM": "4",
+    "BA": "5",
+    "CE": "6",
+    "DF": "7",
+    "ES": "8",
+    "GO": "9",
+    "MA": "10",
+    "MT": "11",
+    "MS": "12",
+    "MG": "13",
+    "PA": "14",
+    "PB": "15",
+    "PR": "16",
+    "PE": "17",
+    "PI": "18",
+    "RJ": "19",
+    "RN": "20",
+    "RS": "21",
+    "RO": "22",
+    "RR": "23",
+    "SC": "24",
+    "SP": "25",
+    "SE": "26",
+    "TO": "27"
+  },
+  "tipos_sexo": {
+    "Não Informado": "0",
+    "Masculino": "1",
+    "Feminino": "2"
+  },
+  "tipos_raca": {
+    "_AVISO": "BUG OFF-BY-ONE BILATERAL — UI exibe descricao(id-1). Parda e Não-Informado são inalcançáveis via UI.",
+    "_lookup_real": {
+      "0": "Indígena",
+      "1": "Branca",
+      "2": "Negra",
+      "3": "Amarela",
+      "4": "Parda",
+      "5": "Não-Informado"
+    },
+    "_workaround_para_enviar": {
+      "Indígena": "1",
+      "Branca": "2",
+      "Negra": "3",
+      "Amarela": "4",
+      "Parda": "4",
+      "Não-Informado": "5"
+    },
+    "_default_escritorio": "2",
+    "_nota": "Default temporário id=2 (workaround bug off-by-one) — semanticamente Parda=id=4, mas UI só renderiza 1/2/3. Reverter para id=4 quando Alterdata corrigir."
+  },
+  "tipos_identidade": {
+    "_AVISO": "BUG OFF-BY-ONE — para UI exibir 'RG', enviar id=1. Confirmado 08/05/2026 matriz 10186/87/88.",
+    "_lookup_real": {
+      "0": "RG",
+      "1": "RIC",
+      "2": "RNE"
+    },
+    "_workaround_para_enviar": {
+      "RG": "1",
+      "RIC": "2",
+      "RNE": "2"
+    },
+    "_default_escritorio_workaround": "1"
+  },
+  "tipos_escolaridade": {
+    "1": "Analfabeto",
+    "2": "Fundamental incompleto até 4ª série",
+    "3": "Fundamental completo até 4ª série",
+    "4": "Fundamental incompleto após 4ª série",
+    "5": "Fundamental completo após 4ª série",
+    "6": "Médio incompleto",
+    "7": "Médio completo",
+    "8": "Superior incompleto",
+    "9": "Superior completo",
+    "10": "Pós-graduado",
+    "11": "Mestrado",
+    "12": "Doutorado",
+    "13": "Pós-Doutorado",
+    "_heuristica": {
+      "cargo_baixo_id": "7",
+      "cargo_alto_id": "9",
+      "cargos_baixos": [
+        "auxiliar",
+        "ajudante",
+        "atendente",
+        "motorista",
+        "cozinheiro",
+        "caixa",
+        "vendedor",
+        "operador"
+      ],
+      "cargos_altos": [
+        "gerente",
+        "supervisor",
+        "analista",
+        "engenheiro",
+        "coordenador",
+        "diretor"
+      ]
+    }
+  },
+  "tipos_estado_civil": {
+    "Solteiro": "1",
+    "Casado": "2",
+    "Divorciado": "3",
+    "Viúvo": "4",
+    "União Estável": "5",
+    "_default_escritorio": "1",
+    "_nota": "Default Solteiro (id=1) — aplicar se cliente não informar."
+  },
+  "tipos_admissao": {
+    "Admissão": "1",
+    "Transferência": "2",
+    "Sucessão": "3",
+    "Cessão": "4",
+    "_default_escritorio": "1"
+  },
+  "tipos_vinculo_trabalhista": {
+    "CLT Urbano PJ Indeterminado": "10",
+    "CLT Urbano PF Indeterminado": "15",
+    "Rural PJ": "20",
+    "Rural PF": "25",
+    "Servidor Público": "30",
+    "_default_escritorio": "10",
+    "_nota": "Default id=10. Revisar por empresa se for rural."
+  },
+  "tipos_categoria": {
+    "Trabalhador": "1",
+    "Estagiário": "0",
+    "Empregado Doméstico": "6",
+    "Menor Aprendiz": "7",
+    "_default_escritorio": "1",
+    "_nota": "Estagiário (id=0) NÃO automatizar — decisão DP."
+  },
+  "tipos_forma_pagamento": {
+    "Horista": "1",
+    "Mensal": "4",
+    "_default_escritorio": "4",
+    "_bug": "Bug 6 — Desktop tem 2 campos; payload preenche só o primeiro. DP corrige o segundo manual."
+  },
+  "tipos_de_conta": {
+    "Conta Corrente": "1",
+    "Poupança": "2",
+    "Conta Salário": "3",
+    "Não Possui": "4",
+    "_default_escritorio": "3"
+  },
+  "tipos_status_admissao": {
+    "_AVISO": "CRÍTICO — labels na tela são ENGANOSOS. Sempre usar IDs, nunca confiar no texto da UI.",
+    "_default_pipeline": "2",
+    "_comportamento": {
+      "id_0": "Pendente — comportamento em estudo",
+      "id_1": "Análise — bypass, vai pro Alterdata SEM validar. NÃO usar em produção.",
+      "id_2": "AguardandoCliente — USAR EM PRODUÇÃO. Valida CPF+campos, desce ao Alterdata. Se faltar info, rebaixa automaticamente para id=5.",
+      "id_3": "Cadastrado — status final",
+      "id_4": "Cancelado — rollback",
+      "id_5": "AConcluir — sistema atribui sozinho quando falta info. NÃO enviar manualmente."
+    }
+  },
+  "paises": {
+    "Brasil": "105",
+    "_default_escritorio": "105",
+    "_nota": "Estrangeiros NÃO entram no fluxo automatizado — decisão DP."
+  },
+  "tipos_cnh": {
+    "_AVISO": "BUG OFF-BY-ONE (parcial) — mesmo padrão de raca/tipoidentidade. Enviar id+1 do que quer mostrar.",
+    "_lookup_real": {
+      "0": "A",
+      "1": "B",
+      "2": "AB",
+      "3": "C",
+      "4": "D",
+      "5": "E",
+      "6": "AC",
+      "7": "AD",
+      "8": "AE"
+    },
+    "_workaround_para_enviar": {
+      "A": "1",
+      "B": "2",
+      "AB": "3",
+      "C": "4",
+      "D": "5",
+      "E": "6",
+      "AC": "7",
+      "AD": "8",
+      "AE": "8"
+    }
+  },
+  "defaults_pipeline": {
+    "_descricao": "Valores padrão aplicados pelo pipeline quando não informado pelo cliente",
+    "raca_id": "2",
+    "nacionalidade_id": "105",
+    "paisnascimento_id": "105",
+    "pais_id": "105",
+    "tipoadmissao_id": "1",
+    "categoriawdp_id": "1",
+    "formapagamento_id": "4",
+    "tipoidentidade_id_workaround": "1",
+    "tipoconta_id": "3",
+    "tipovinculotrabalhista_id": "10",
+    "statusadmissao_id": "2",
+    "primeiroemprego": false,
+    "possuideficiencia": false,
+    "requersegurodesemprego": false,
+    "diascontratoexperiencia": 30
+  },
+  "regras_escritorio": {
+    "ctps_do_cpf": "Se cliente não informar CTPS: ctps = int(CPF[:7]), seriectps = CPF[7:11], ufctps = mesma UF do RG",
+    "numero_endereco_zero": "OMITIR o campo numero quando for 0 ou ausente — não enviar null nem 0",
+    "cpf_como_int": "CPF sempre como inteiro — sem zeros à esquerda, sem formatação",
+    "datas_nulas": "NUNCA enviar datas nulas — omitir o campo completamente",
+    "celular_telefone": "Remover hífens e espaços. Tamanho: 12-13 chars. Ex: (62)990000000",
+    "salario_obrigatorio": "Salário é o único campo obrigatório sem default — se faltar, rejeitar e pedir ao cliente",
+    "estado_civil_default": "Solteiro (id=1) se cliente não informar",
+    "escolaridade_heuristica": "Cargo baixo = id=7 (Médio completo). Cargo alto = id=9 (Superior completo)"
+  },
+  "bugs_conhecidos": {
+    "bug_1_raca": "Off-by-one bilateral — Parda/Não-Informado inalcançáveis via UI.",
+    "bug_2_tipoidentidade": "Off-by-one — enviar id=1 para UI mostrar RG.",
+    "bug_3_categoriacnh": "Off-by-one parcial — enviar id+1 do desejado.",
+    "bug_4_diascontratoexperiencia": "Desktop sempre mostra '2'. DP corrige manual.",
+    "bug_5_ocorrencia": "Não chega ao Desktop. DP preenche manual.",
+    "bug_6_formapagamento": "Preenche só 1 dos 2 campos do Desktop. DP corrige manual.",
+    "bug_7_dataterminocontrato": "Desktop recalcula errado (acoplado com bug_4). DP corrige manual.",
+    "bug_8_departamento": "ID muda no mapping local do Desktop — OK, descrição confere.",
+    "bug_9_numero_zero": "Desktop mostra '0' literal. OMITIR o campo quando zero."
+  },
+  "campos_faltando_no_payload": {
+    "_nota": "12 campos que existem no Desktop mas não têm atributo no payload /candidatos. DP preenche manual.",
+    "lista": [
+      "Matrícula eSocial",
+      "Categoria eSocial (default: 101 Empregado)",
+      "Natureza da atividade (default: Trabalhador urbano)",
+      "Tipo de jornada",
+      "Regime de Jornada",
+      "Horas semanais (default: 44)",
+      "Horário código (varia por empresa — MODELOFARMA: 1179)",
+      "Tipo de salário contratual (default: Mensal + data=admissão)",
+      "Adiantamento checkbox (default: marcar)",
+      "Não atualiza salário checkbox (default: marcar)",
+      "Dias para prorrogação (default: 60)",
+      "FGTS — Conta, Data opção=admissão, UF=GO, Saldo=0"
+    ]
+  }
+}
