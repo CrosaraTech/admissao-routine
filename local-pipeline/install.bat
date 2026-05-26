@@ -30,11 +30,14 @@ if not exist ".venv\Scripts\python.exe" (
 )
 
 echo.
-echo Atualizando pip...
-".venv\Scripts\python.exe" -m pip install --upgrade pip --quiet
+echo Atualizando pip (pode demorar ~30s na 1a vez)...
+".venv\Scripts\python.exe" -m pip install --upgrade pip
+if errorlevel 1 (
+    echo [AVISO] Falha atualizando pip — seguindo com a versao instalada.
+)
 
 echo.
-echo Instalando dependencias do requirements.txt...
+echo Instalando dependencias do requirements.txt (pode demorar 1-3 min)...
 ".venv\Scripts\python.exe" -m pip install -r requirements.txt
 if errorlevel 1 (
     echo [ERRO] Falhou instalando deps.
@@ -54,8 +57,11 @@ echo   2. (Opcional mas recomendado) Valide o setup:
 echo        run-verificar.bat
 echo.
 echo   3. Rode:
-echo        run-gui.bat        ^(interface grafica^)
+echo        AdmitER.bat        ^(interface grafica - launcher principal^)
 echo        run-once.bat       ^(passada unica - Task Scheduler^)
 echo        run-loop.bat       ^(polling continuo^)
+echo.
+echo   4. Pra um .exe standalone com icone:
+echo        build-exe.bat      ^(gera dist\AdmitER\AdmitER.exe^)
 echo ============================================================
 pause

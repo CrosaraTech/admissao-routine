@@ -43,6 +43,8 @@ EXCLUDE_DIRS = {
     ".ruff_cache",
     "venv",
     "env",
+    "build",   # PyInstaller intermediate
+    "dist",    # PyInstaller output — distribuir separado
 }
 
 # Arquivos específicos a excluir
@@ -58,7 +60,7 @@ EXCLUDE_FILES = {
 }
 
 # Extensões a excluir
-EXCLUDE_EXT = {".pyc", ".pyo", ".log", ".swp", ".tmp"}
+EXCLUDE_EXT = {".pyc", ".pyo", ".log", ".swp", ".tmp", ".spec"}
 
 
 def should_exclude(p: Path) -> tuple[bool, str]:
@@ -114,6 +116,7 @@ def main() -> int:
     # Resumo (ASCII-safe pra cp1252 do Windows)
     print(f"  Incluidos: {len(incluidos)} arquivos")
     importantes = ["interface.py", "main.py", "DEPLOY.md", "install.bat",
+                   "AdmitER.bat", "build-exe.bat",
                    ".env.example", "config.json", "briefing.md"]
     for nome in importantes:
         marcador = "[OK]" if any(str(p) == nome for p in incluidos) else "[FALTA]"

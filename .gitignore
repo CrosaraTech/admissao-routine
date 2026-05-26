@@ -23,6 +23,18 @@ __pycache__/
 *.py[cod]
 *.pyo
 
+# Virtualenvs (deploy)
+local-pipeline/.venv/
+local-pipeline/venv/
+
+# Saídas do PyInstaller (build-exe.bat)
+local-pipeline/build/
+local-pipeline/dist/
+local-pipeline/*.spec
+
+# Zips gerados pelo criar-zip.py
+local-pipeline-*.zip
+
 # Editor
 .vscode/
 .idea/

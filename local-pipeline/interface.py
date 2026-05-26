@@ -38,7 +38,7 @@ COR_NAVY_HOVER = "#3F5C6E"    # nav button hover
 COR_NAVY_ACTIVE = "#2A4050"   # nav button when active (não usado, vai laranja)
 COR_BEIGE = "#F4DDC8"         # main background
 COR_BEIGE_DARK = "#E8C9AE"    # subtle differentiation
-COR_WHITE = "#FFFFFF"          # cards
+COR_WHITE = "#FFFFFF"         # cards
 COR_ORANGE = "#D95C32"        # accent / primary / active nav
 COR_ORANGE_DARK = "#B84A24"   # primary button hover
 COR_TEXT_DARK = "#2A4050"     # text on light bg
@@ -58,6 +58,15 @@ except ImportError:
     _HAS_PIL = False
 
 LOGO_PATH = Path(__file__).parent / "Logotipo Crosara - CMYK-04.jpg"
+
+# Logo do app — AdmitER. Usuário salva admitir-logo.png na pasta;
+# o .ico é auto-gerado a partir do .png (via Pillow) se faltar.
+ADMITER_LOGO_PNG = Path(__file__).parent / "admitir-logo.png"
+ADMITER_LOGO_ICO = Path(__file__).parent / "admitir-logo.ico"
+APP_NAME = "AdmitER"
+APP_VERSION = "1.0.0"
+APP_TAGLINE = "Pipeline de Admissão Automatizada"
+APP_VENDOR = "CrosaraTech"
 
 
 # ============================================================
@@ -136,11 +145,12 @@ HINTS_FORM = {
 class PipelineGUI(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Crosara — Pipeline de Admissão")
+        self.title(f"{APP_NAME} — {APP_TAGLINE}")
         self.geometry("1300x800")
         self.minsize(1000, 600)
 
         self._init_state()
+        self._aplicar_icone_janela()
         self._build_ui()
         self._consumir_fila()  # loop periódico thread→UI
         self._refresh_tabelas()
@@ -325,27 +335,27 @@ class PipelineGUI(tk.Tk):
         side.pack(side="left", fill="y")
         side.pack_propagate(False)
 
-        # Logo header
-        header = tk.Frame(side, bg=COR_NAVY, height=90)
-        header.pack(fill="x", pady=(20, 30), padx=15)
+        # Logo header — AdmitER (logo do app) + texto + tagline
+        header = tk.Frame(side, bg=COR_NAVY, height=110)
+        header.pack(fill="x", pady=(20, 25), padx=15)
         header.pack_propagate(False)
 
-        logo_img = self._carregar_logo_sidebar()
-        if logo_img:
-            self._logo_ref = logo_img  # evita garbage collect
-            tk.Label(header, image=logo_img, bg=COR_NAVY).pack(side="left", padx=(0, 8))
+        admiter_logo = self._carregar_logo_admiter_sidebar()
+        if admiter_logo:
+            self._admiter_logo_ref = admiter_logo
+            tk.Label(header, image=admiter_logo, bg=COR_NAVY).pack(side="left", padx=(0, 10))
             txt_frame = tk.Frame(header, bg=COR_NAVY)
             txt_frame.pack(side="left", anchor="center")
-            tk.Label(txt_frame, text="CROSARA", bg=COR_NAVY, fg=COR_TEXT_LIGHT,
-                     font=("Segoe UI", 14, "bold")).pack(anchor="w")
-            tk.Label(txt_frame, text="CONTABILIDADE", bg=COR_NAVY, fg=COR_ORANGE,
-                     font=("Segoe UI", 8, "bold")).pack(anchor="w")
-        else:
-            # Fallback texto
-            tk.Label(header, text="CROSARA", bg=COR_NAVY, fg=COR_TEXT_LIGHT,
+            tk.Label(txt_frame, text=APP_NAME, bg=COR_NAVY, fg=COR_TEXT_LIGHT,
                      font=("Segoe UI", 18, "bold")).pack(anchor="w")
-            tk.Label(header, text="CONTABILIDADE", bg=COR_NAVY, fg=COR_ORANGE,
-                     font=("Segoe UI", 9, "bold")).pack(anchor="w")
+            tk.Label(txt_frame, text=f"by {APP_VENDOR}", bg=COR_NAVY,
+                     fg=COR_ORANGE, font=("Segoe UI", 8, "bold")).pack(anchor="w")
+        else:
+            # Fallback: só texto (caso admitir-logo.png não exista)
+            tk.Label(header, text=APP_NAME, bg=COR_NAVY, fg=COR_ORANGE,
+                     font=("Segoe UI", 24, "bold")).pack(anchor="w")
+            tk.Label(header, text=f"by {APP_VENDOR}", bg=COR_NAVY,
+                     fg=COR_TEXT_LIGHT, font=("Segoe UI", 9)).pack(anchor="w")
 
         # Nav buttons
         self._nav_buttons: dict[str, tk.Button] = {}
@@ -370,6 +380,38 @@ class PipelineGUI(tk.Tk):
             )
             btn.pack(fill="x", padx=10, pady=2)
             self._nav_buttons[key] = btn
+
+        # Rodapé do sidebar — botão Sobre + assinatura
+        rodape = tk.Frame(side, bg=COR_NAVY)
+        rodape.pack(side="bottom", fill="x", padx=10, pady=15)
+        tk.Button(
+            rodape, text="ⓘ  Sobre o AdmitER", anchor="w",
+            bg=COR_NAVY, fg=COR_TEXT_LIGHT,
+            activebackground=COR_NAVY_HOVER, activeforeground=COR_WHITE,
+            bd=0, relief="flat", padx=20, pady=8,
+            font=("Segoe UI", 9),
+            cursor="hand2",
+            command=self._abrir_sobre,
+        ).pack(fill="x", pady=2)
+        tk.Label(rodape, text=f"v{APP_VERSION} · by {APP_VENDOR}",
+                 bg=COR_NAVY, fg=COR_TEXT_MUTED,
+                 font=("Segoe UI", 7)).pack(pady=(8, 0))
+
+    def _carregar_logo_admiter_sidebar(self):
+        """Logo do AdmitER pra topo do sidebar. Tamanho compacto (~60px)."""
+        if not _HAS_PIL or not ADMITER_LOGO_PNG.exists():
+            return None
+        try:
+            img = Image.open(ADMITER_LOGO_PNG)
+            if img.mode != "RGBA":
+                img = img.convert("RGBA")
+            w, h = img.size
+            target_h = 60
+            new_w = int(w * target_h / h)
+            img = img.resize((new_w, target_h), Image.LANCZOS)
+            return ImageTk.PhotoImage(img)
+        except Exception:
+            return None
 
     def _carregar_logo_sidebar(self):
         if not _HAS_PIL or not LOGO_PATH.exists():
@@ -1663,6 +1705,102 @@ class PipelineGUI(tk.Tk):
                                 "Reinicie o pipeline pra que mudanças entrem em vigor.")
         except Exception as e:
             messagebox.showerror("Erro salvando", str(e))
+
+    # ---- App icon + Sobre dialog ---------------------------------
+
+    def _aplicar_icone_janela(self):
+        """Carrega admitir-logo.{ico,png} como ícone da janela.
+        Gera .ico automaticamente do .png via Pillow se faltar.
+        """
+        # Auto-gera .ico do .png se faltar
+        if _HAS_PIL and ADMITER_LOGO_PNG.exists() and not ADMITER_LOGO_ICO.exists():
+            try:
+                img = Image.open(ADMITER_LOGO_PNG)
+                if img.mode != "RGBA":
+                    img = img.convert("RGBA")
+                img.save(
+                    ADMITER_LOGO_ICO, format="ICO",
+                    sizes=[(16, 16), (32, 32), (48, 48), (64, 64),
+                           (128, 128), (256, 256)],
+                )
+            except Exception as e:
+                print(f"[icone] falha gerando ICO: {e}")
+
+        # Windows nativo: .ico funciona melhor (taskbar + title bar)
+        if ADMITER_LOGO_ICO.exists():
+            try:
+                self.iconbitmap(default=str(ADMITER_LOGO_ICO))
+                return
+            except tk.TclError:
+                pass
+
+        # Fallback: iconphoto com PNG via Pillow
+        if _HAS_PIL and ADMITER_LOGO_PNG.exists():
+            try:
+                img = Image.open(ADMITER_LOGO_PNG)
+                self._icon_ref = ImageTk.PhotoImage(img)
+                self.iconphoto(True, self._icon_ref)
+            except Exception as e:
+                print(f"[icone] falha aplicando iconphoto: {e}")
+
+    def _abrir_sobre(self):
+        """Modal 'Sobre' com logo, versão, specs e by CrosaraTech."""
+        win = tk.Toplevel(self)
+        win.title(f"Sobre o {APP_NAME}")
+        win.geometry("480x620")
+        win.resizable(False, False)
+        win.transient(self)
+        win.configure(bg=COR_WHITE)
+
+        # Logo grande
+        if _HAS_PIL and ADMITER_LOGO_PNG.exists():
+            try:
+                img = Image.open(ADMITER_LOGO_PNG)
+                if img.mode != "RGBA":
+                    img = img.convert("RGBA")
+                img.thumbnail((140, 140), Image.LANCZOS)
+                self._sobre_logo_ref = ImageTk.PhotoImage(img)
+                tk.Label(win, image=self._sobre_logo_ref, bg=COR_WHITE).pack(pady=(30, 8))
+            except Exception:
+                pass
+
+        # Título grande
+        tk.Label(win, text=APP_NAME, font=("Segoe UI", 30, "bold"),
+                 fg=COR_ORANGE, bg=COR_WHITE).pack()
+        tk.Label(win, text=APP_TAGLINE, font=("Segoe UI", 11),
+                 fg=COR_TEXT_MUTED, bg=COR_WHITE).pack()
+        tk.Label(win, text=f"Versão {APP_VERSION}", font=("Segoe UI", 9),
+                 fg=COR_TEXT_MUTED, bg=COR_WHITE).pack(pady=(2, 25))
+
+        # Specs box
+        specs_frame = tk.Frame(win, bg=COR_BEIGE, padx=20, pady=15)
+        specs_frame.pack(padx=30, fill="x")
+
+        info = [
+            ("Linguagem", "Python 3.11+"),
+            ("Interface", "Tkinter + Pillow"),
+            ("IA", "Anthropic Claude (Vision)"),
+            ("APIs", "Gmail · Anthropic · eContador"),
+            ("Logs", "NDJSON estruturado + audit"),
+            ("Modos", "GUI · CLI (Task Scheduler)"),
+        ]
+        for label, val in info:
+            row = tk.Frame(specs_frame, bg=COR_BEIGE)
+            row.pack(fill="x", pady=2)
+            tk.Label(row, text=label + ":", width=12, anchor="w",
+                     bg=COR_BEIGE, fg=COR_TEXT_MUTED,
+                     font=("Segoe UI", 9)).pack(side="left")
+            tk.Label(row, text=val, bg=COR_BEIGE, fg=COR_TEXT_DARK,
+                     font=("Segoe UI", 10, "bold")).pack(side="left")
+
+        # Assinatura
+        tk.Label(win, text="", bg=COR_WHITE).pack(pady=8)
+        tk.Label(win, text="made by", font=("Segoe UI", 9),
+                 fg=COR_TEXT_MUTED, bg=COR_WHITE).pack()
+        tk.Label(win, text=APP_VENDOR, font=("Segoe UI", 16, "bold"),
+                 fg=COR_ORANGE, bg=COR_WHITE).pack()
+
+        ttk.Button(win, text="Fechar", command=win.destroy).pack(pady=25)
 
     def _atualizar_status_dot(self):
         """Cor do dot da pill: verde rodando, laranja aguardando, cinza parado."""

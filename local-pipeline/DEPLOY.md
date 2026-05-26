@@ -1,4 +1,6 @@
-# Deploy do Pipeline em Servidor Local
+# Deploy do AdmitER em Servidor Local
+
+**AdmitER** — Pipeline de Admissão Automatizada, by **CrosaraTech**.
 
 Passo-a-passo pra subir o pipeline em outra máquina. Tudo está dentro
 desta pasta — basta zipar, copiar e seguir.
@@ -67,10 +69,12 @@ Se algum check falhar, o erro fica claro com instruções.
 
 ### Opção A — Interface gráfica (humano operando)
 ```powershell
-.\run-gui.bat
+.\AdmitER.bat
 ```
-Abre janela. Use **Iniciar polling** pra começar; **Backup agora** pra
-snapshot da planilha e payloads.
+Abre a janela do AdmitER. Use **Iniciar polling** pra começar; **Backup
+agora** pra snapshot da planilha e payloads.
+
+> Existe também `run-gui.bat` como alias legado (chama o mesmo).
 
 ### Opção B — Passada única (Task Scheduler / cron)
 ```powershell
@@ -112,7 +116,19 @@ local-pipeline/
     └── backups/<ts>/               # Backups (via botão na UI)
 ```
 
-## 7. Atualizar a planilha CBO (se cargos novos)
+## 7. Gerar AdmitER.exe standalone (opcional)
+
+Se quiser um executável com ícone próprio (em vez de rodar via .bat):
+
+```powershell
+.\build-exe.bat
+```
+
+Requer `admitir-logo.png` na pasta (qualquer PNG; será auto-convertido pra .ico).
+Saída em `dist\AdmitER\AdmitER.exe` — pode ser distribuído sozinho com a
+pasta `dist\AdmitER\` inteira.
+
+## 8. Atualizar a planilha CBO (se cargos novos)
 
 Se o eContador ganhou cargos novos depois do zip:
 ```powershell
