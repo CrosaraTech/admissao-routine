@@ -1541,7 +1541,7 @@ def postar_pendencia(msg_id: str, nome: str, cnpj: str):
         ("categoriawdp",             "tipos-categoria",                  "1"),  # Trabalhador
         ("formapagamento",           "tipos-forma-de-pagamento",         "4"),  # Mensal
         ("tipoidentidade",           "tipos-identidade",                 "1"),  # RG (workaround off-by-one)
-        ("raca",                     "tipos-raca",                       "8"),  # Parda (v2.16.43: bug off-by-one FIXED por Alterdata)
+        # raca REMOVIDO dos defaults — virou FORCED_OVERRIDE aplicado abaixo
         ("tipoDeDeficiencia",        "tipos-deficiencia",                "0"),  # Não possui
         ("statusatestadoocupacional","tipos-status-atestado-ocupacional","1"),  # Apto
         ("nacionalidade",            "paises",                           "105"),# Brasil
@@ -1557,6 +1557,15 @@ def postar_pendencia(msg_id: str, nome: str, cnpj: str):
     for rel_nome, tipo, id_default in _DEFAULTS_RELS:
         if rel_nome not in _rels_p or not (_rels_p.get(rel_nome) or {}).get("data", {}).get("id"):
             _rels_p[rel_nome] = {"data": {"type": tipo, "id": id_default}}
+
+    # v2.16.44: overrides forcados — sobrescrevem mesmo quando ja tem valor
+    # (regra escritorio: raca sempre Parda id=8, ignora o que Claude leu no
+    # doc ou o que operador escolheu no form).
+    _FORCED = [
+        ("raca", "tipos-raca", "8"),  # Parda — SEMPRE
+    ]
+    for rel_nome, tipo, id_forced in _FORCED:
+        _rels_p[rel_nome] = {"data": {"type": tipo, "id": id_forced}}
 
     # CTPS derivada do CPF (regra do escritório) — só se não vier do Claude
     if "ctps" not in _attrs_p and _attrs_p.get("cpf"):

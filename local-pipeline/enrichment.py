@@ -328,12 +328,9 @@ FIXED_DEFAULTS_RELS = {
     "pais":                      ("paises", "105"),
     "tipovinculotrabalhista":    ("tipos-vinculos-trabalhista", "60"),  # CLT determinado urbano
     "categoriawdp":              ("tipos-categoria", "1"),
-    # raca=8 (Parda) — default escritório. v2.16.43 (2026-07-01): confirmado
-    # via cobaia 10186 que bug bilateral off-by-one FOI CORRIGIDO pelo suporte
-    # Alterdata. Round-trip API OK pra ids 1,2,3,6,8,9. UI eContador renderiza
-    # "Parda" pra id=8 (visualizado direto). Workaround anterior (raca=2 Branca)
-    # removido.
-    "raca":                      ("tipos-raca", "8"),
+    # raca REMOVIDO daqui em v2.16.44 — virou FORCED_OVERRIDE (nunca respeita
+    # extracao do Claude). Regra escritorio: SEMPRE Parda id=8, mesmo que doc
+    # mencione outra cor. Ver FORCED_OVERRIDES_RELS abaixo.
     "tipoadmissao":              ("tipos-admissao", "1"),
     "formapagamento":            ("tipos-forma-de-pagamento", "4"),     # Mensal
     "tipoDeDeficiencia":         ("tipos-deficiencia", "0"),            # Não Possui
@@ -343,6 +340,15 @@ FIXED_DEFAULTS_RELS = {
     "estadocivil":               ("tipos-estado-civil", "1"),     # Solteiro
     "escolaridade":              ("tipos-escolaridade", "7"),     # Médio completo
 }
+
+# v2.16.44: overrides FORÇADOS — sobrescrevem MESMO que Claude tenha extraido
+# valor do doc. Diferente de FIXED_DEFAULTS_RELS que so entra quando campo
+# estava vazio. Regra escritorio: raca sempre Parda id=8, decisao DP em
+# 2026-07-02.
+FORCED_OVERRIDES_RELS = {
+    "raca": ("tipos-raca", "8"),  # Parda — SEMPRE, ignora leitura do doc
+}
+
 
 FIXED_DEFAULTS_ATTRS = {
     "primeiroemprego":          False,
@@ -424,6 +430,11 @@ def apply_fixed_defaults(payload: dict) -> dict:
 
     for rel, (tipo, id_) in FIXED_DEFAULTS_RELS.items():
         _set_rel_id(payload, rel, tipo, id_)
+
+    # v2.16.44: overrides forcados — sobrescrevem mesmo se ja existe
+    rels = payload.setdefault("data", {}).setdefault("relationships", {})
+    for rel, (tipo, id_) in FORCED_OVERRIDES_RELS.items():
+        rels[rel] = {"data": {"type": tipo, "id": str(id_)}}
 
     return payload
 
