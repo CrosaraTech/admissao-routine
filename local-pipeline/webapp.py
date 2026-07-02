@@ -808,7 +808,8 @@ def _reprocessar_msg_em_thread(msg_id: str):
             processar_email(msg, gmail, claude, api, planilha, config)
         finally:
             api.close()
-            gmail.close()
+            # GmailClient nao tem close() — Google API client resolve no GC.
+            # Deixar chamada aqui quebra reprocessamento com AttributeError.
         IMPORTAR.marcar_terminada(resumo={"reprocessado": msg_id[:16]})
         log.info(f"[webapp] Reprocessamento concluído: {msg_id[:16]}")
     except Exception as e:
