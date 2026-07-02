@@ -13,7 +13,11 @@ echo.
 echo ============================================================
 echo [%date% %time%] Iniciando AdmitER webapp...
 echo ============================================================
-.\.venv\Scripts\python.exe webapp.py
+REM Path absoluto obrigatorio — Windows grava CommandLine literal no WMI.
+REM Se lancar com caminho relativo (.\.venv...), Kill-WebappPython do
+REM deploy_watcher.ps1 nao consegue casar contra $RepoPath e nunca mata
+REM o processo -> auto-deploy silenciosamente nao funciona.
+"%~dp0.venv\Scripts\python.exe" "%~dp0webapp.py"
 
 echo.
 echo [%date% %time%] Webapp encerrou (exit=%errorlevel%). Reiniciando em 3s...

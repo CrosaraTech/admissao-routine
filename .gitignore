@@ -65,6 +65,9 @@ local-pipeline-*.zip
 Thumbs.db
 .DS_Store
 
+# Deploy watcher log (gerado no servidor)
+local-pipeline/deploy_watcher.log
+
 # Backups antigos (versionamento redundante)
 *.bak.py
 *.bak.md
