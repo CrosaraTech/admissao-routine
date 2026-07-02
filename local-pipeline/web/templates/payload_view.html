@@ -1,0 +1,135 @@
+{% extends "base.html" %}
+
+{% block nav %}processadas{% endblock %}
+{% block titulo %}Payload de {{ nome }}{% endblock %}
+{% block eyebrow %}<span class="eyebrow">Auditoria · Dados enviados</span>{% endblock %}
+
+{% block header_actions %}
+  <a class="btn btn-ghost btn-sm" href="{{ url_for('processadas') }}">← Voltar</a>
+  {% if candidato_id %}
+    <a class="btn btn-secondary btn-sm" target="_blank"
+       href="{{ url_for('api_candidato_detalhe', candidato_id=candidato_id) }}"
+       title="Lê o estado atual do candidato direto da API eContador (com relationships expandidas)">
+      🔍 Comparar com estado real no eContador
+    </a>
+  {% endif %}
+{% endblock %}
+
+{% block conteudo %}
+  <nav class="breadcrumb" aria-label="Trilha">
+    <a href="{{ url_for('processadas') }}">Processadas</a> › {{ nome }}
+  </nav>
+
+  <div class="card reveal">
+    <h2 class="card-title">Identificação</h2>
+    <div class="grid-attrs">
+      <div class="attr">
+        <span class="attr-label">Nome</span>
+        <span class="attr-value">{{ nome }}</span>
+      </div>
+      <div class="attr">
+        <span class="attr-label">Candidato ID</span>
+        <span class="attr-value">
+          {% if candidato_id %}<span class="badge badge-ok">#{{ candidato_id }}</span>{% else %}—{% endif %}
+        </span>
+      </div>
+      <div class="attr">
+        <span class="attr-label">Empresa</span>
+        <span class="attr-value">{{ resol.razao_social|default('—') }}</span>
+      </div>
+      <div class="attr">
+        <span class="attr-label">CNPJ</span>
+        <span class="attr-value">{{ resol.cnpj_empresa|default('—') }}</span>
+      </div>
+      <div class="attr">
+        <span class="attr-label">Status</span>
+        <span class="attr-value">{{ resultado.status|default('—') }}</span>
+      </div>
+      <div class="attr">
+        <span class="attr-label">Payload em disco</span>
+        <span class="attr-value"><code class="small">{{ payload_path }}</code></span>
+      </div>
+    </div>
+  </div>
+
+  <div class="card reveal" data-d="1">
+    <h2 class="card-title">Attributes ({{ attrs|length }} campos)</h2>
+    <p class="small muted mb-12">Dados pessoais/contratuais enviados no payload.</p>
+    {% if attrs %}
+      <table class="table">
+        <thead>
+          <tr>
+            <th style="width:30%;">Campo</th>
+            <th>Valor enviado</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for k in attrs.keys()|sort %}
+            <tr>
+              <td><code class="small">{{ k }}</code></td>
+              <td>
+                {% set v = attrs[k] %}
+                {% if v is none %}
+                  <em class="muted">null</em>
+                {% elif v == '' %}
+                  <em class="muted">(vazio)</em>
+                {% elif v is sameas(true) %}
+                  <span class="badge badge-ok">true</span>
+                {% elif v is sameas(false) %}
+                  <span class="badge">false</span>
+                {% else %}
+                  {{ v }}
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="muted">Nenhum attribute no payload.</p>
+    {% endif %}
+  </div>
+
+  <div class="card reveal" data-d="2">
+    <h2 class="card-title">Relationships ({{ rels|length }} relacionamentos)</h2>
+    <p class="small muted mb-12">
+      IDs das entidades vinculadas (empresa, departamento, função, sexo, raça, etc).
+      Os defaults do escritório que o pipeline aplica antes do POST ficam aqui.
+    </p>
+    {% if rels %}
+      <table class="table">
+        <thead>
+          <tr>
+            <th style="width:30%;">Relacionamento</th>
+            <th>ID</th>
+            <th>Tipo</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for k in rels.keys()|sort %}
+            <tr>
+              <td><code class="small">{{ k }}</code></td>
+              <td><strong>{{ rels[k].id or '—' }}</strong></td>
+              <td class="small muted">{{ rels[k].type or '—' }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="muted">Nenhuma relationship no payload (o pipeline aplica defaults antes do POST).</p>
+    {% endif %}
+  </div>
+
+  <div class="card reveal" data-d="3">
+    <h2 class="card-title">Resolução do pipeline</h2>
+    <p class="small muted mb-12">O que o orquestrador resolveu pra essa admissão antes do POST.</p>
+    <pre style="white-space:pre-wrap; background:rgba(0,0,0,.04); padding:14px; border-radius:8px; font-size:12px;">{{ resol|tojson(indent=2) }}</pre>
+  </div>
+
+  <div class="card reveal" data-d="4">
+    <h2 class="card-title">Resultado do POST</h2>
+    <p class="small muted mb-12">Resposta do eContador (status, candidato_id, eventual erro).</p>
+    <pre style="white-space:pre-wrap; background:rgba(0,0,0,.04); padding:14px; border-radius:8px; font-size:12px;">{{ resultado|tojson(indent=2) }}</pre>
+  </div>
+
+{% endblock %}

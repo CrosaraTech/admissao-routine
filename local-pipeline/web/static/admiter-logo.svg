@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="AdmitER">
+  <defs>
+    <linearGradient id="ad-grad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#D95C32"/>
+      <stop offset="100%" stop-color="#FF9266"/>
+    </linearGradient>
+  </defs>
+  <!-- "A" maiúsculo em forma de V invertido -->
+  <path d="M 22 88 L 50 14 L 78 88"
+        stroke="url(#ad-grad)" stroke-width="9"
+        fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- Marca de "check" pequena no quadrante superior direito -->
+  <path d="M 60 30 L 67 39 L 80 22"
+        stroke="url(#ad-grad)" stroke-width="7"
+        fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

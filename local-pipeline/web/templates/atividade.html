@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+
+{% block nav %}atividade{% endblock %}
+{% block titulo %}Atividade{% endblock %}
+
+{% block header_actions %}
+  <form method="POST" action="{{ url_for('atividade_limpar') }}"
+        style="display:inline"
+        onsubmit="return confirm('Limpar o histórico mostrado aqui? (não apaga o arquivo de log no disco)');">
+    <button type="submit" class="btn btn-ghost btn-sm">Limpar histórico</button>
+  </form>
+{% endblock %}
+
+{% block conteudo %}
+
+<div class="card">
+  <p class="muted small mb-8">
+    Eventos do pipeline em tempo real (atualiza a cada 3 segundos).
+    Mostra as últimas 200 mensagens. Igual à "Atividade recente" do app de
+    desktop. Mensagens em vermelho são erros; amarelo são avisos; cinza são
+    informações normais.
+  </p>
+
+  <div id="terminal-box"
+       class="terminal"
+       hx-get="{{ url_for('htmx_atividade') }}"
+       hx-trigger="every 3s"
+       hx-swap="innerHTML">
+    {% include "_partials/atividade_log.html" %}
+  </div>
+
+  <button id="terminal-back-to-bottom" class="btn btn-primary btn-sm" hidden>
+    ↓ Voltar pro fim
+  </button>
+</div>
+
+<script>
+  (function () {
+    var TERMINAL = document.getElementById("terminal-box");
+    var BTN_FIM = document.getElementById("terminal-back-to-bottom");
+    if (!TERMINAL) return;
+
+    // "Perto do fim" se estiver nos últimos 60 pixels
+    function pertoDoFim() {
+      return (TERMINAL.scrollTop + TERMINAL.clientHeight) >=
+             (TERMINAL.scrollHeight - 60);
+    }
+    function irPraoFim() {
+      TERMINAL.scrollTop = TERMINAL.scrollHeight;
+    }
+
+    // Snapshot ANTES do HTMX trocar o conteúdo:
+    // se o usuário estava no fim, marca pra rolar de novo. Se estava
+    // lendo lá pra cima, NÃO mexe — preserva a posição dele.
+    var estavaNoFim = true;
+    document.body.addEventListener("htmx:beforeSwap", function (ev) {
+      var t = ev.detail && ev.detail.target;
+      if (t && t.id === "terminal-box") {
+        estavaNoFim = pertoDoFim();
+      }
+    });
+    document.body.addEventListener("htmx:afterSwap", function (ev) {
+      var t = ev.detail && ev.detail.target;
+      if (t && t.id === "terminal-box" && estavaNoFim) {
+        irPraoFim();
+      }
+    });
+
+    // Mostra/esconde o botão "Voltar pro fim" conforme o usuário rola.
+    // Aparece quando ele tá longe do fim; some quando volta.
+    function atualizarBotao() {
+      if (!BTN_FIM) return;
+      if (pertoDoFim()) {
+        BTN_FIM.hidden = true;
+      } else {
+        BTN_FIM.hidden = false;
+      }
+    }
+    TERMINAL.addEventListener("scroll", atualizarBotao);
+    if (BTN_FIM) {
+      BTN_FIM.addEventListener("click", function () {
+        irPraoFim();
+        atualizarBotao();
+      });
+    }
+
+    // Scroll inicial pro fim ao abrir a página
+    irPraoFim();
+    atualizarBotao();
+  })();
+</script>
+
+{% endblock %}

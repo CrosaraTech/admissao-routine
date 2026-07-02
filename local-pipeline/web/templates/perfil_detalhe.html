@@ -1,0 +1,314 @@
+{% extends "base.html" %}
+
+{% block nav %}perfis{% endblock %}
+{% block titulo %}{{ perfil.nome_apresentacao or remetente }}{% endblock %}
+
+{% block header_actions %}
+  <a href="{{ url_for('perfis_listar') }}" class="btn btn-ghost">&larr; Voltar</a>
+{% endblock %}
+
+{% block conteudo %}
+
+  <div class="breadcrumb">
+    <a href="{{ url_for('perfis_listar') }}">Perfis</a>
+    &rsaquo; <span>{{ remetente }}</span>
+  </div>
+
+  {# ── Card 1: Identificação ─────────────────────────────── #}
+  <div class="card">
+    <h2 class="card-title">Identificação</h2>
+    <div class="card-body">
+      <p>
+        <strong>Email do remetente:</strong>
+        <code>{{ remetente }}</code>
+      </p>
+      <p><strong>Contratantes (CNPJ ou CPF):</strong></p>
+      {% set cnpjs = perfil.cnpjs or [] %}
+      {% if cnpjs %}
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Tipo</th>
+              <th>Documento</th>
+              <th>Razão social / Nome</th>
+              <th class="nowrap">Nº admissões</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for c in cnpjs %}
+              <tr>
+                <td>
+                  {% if c.cnpj|length == 11 %}
+                    <span class="badge">CPF</span>
+                  {% elif c.cnpj|length == 14 %}
+                    <span class="badge">CNPJ</span>
+                  {% else %}
+                    <span class="badge">?</span>
+                  {% endif %}
+                </td>
+                <td><code>
+                  {% if c.cnpj|length == 14 %}
+                    {{ c.cnpj[:2] }}.{{ c.cnpj[2:5] }}.{{ c.cnpj[5:8] }}/{{ c.cnpj[8:12] }}-{{ c.cnpj[12:] }}
+                  {% elif c.cnpj|length == 11 %}
+                    {{ c.cnpj[:3] }}.{{ c.cnpj[3:6] }}.{{ c.cnpj[6:9] }}-{{ c.cnpj[9:] }}
+                  {% else %}
+                    {{ c.cnpj }}
+                  {% endif %}
+                </code></td>
+                <td>{{ c.razao_social|default("—") }}</td>
+                <td class="nowrap">{{ c.n_admissoes|default(0) }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% else %}
+        <p class="muted mb-0">Nenhum contratante vinculado ainda.</p>
+      {% endif %}
+    </div>
+  </div>
+
+  {# ── Card 2: Estatísticas ──────────────────────────────── #}
+  {% set stats = perfil.estatisticas or {} %}
+  <div class="card">
+    <h2 class="card-title">Estatísticas</h2>
+    <div class="grid-3">
+      <div class="perfil-card-stat">
+        <div class="num">{{ stats.n_total|default(0) }}</div>
+        <div class="label">Total de admissões</div>
+      </div>
+      <div class="perfil-card-stat">
+        <div class="num" style="color: var(--success);">{{ stats.n_processadas|default(0) }}</div>
+        <div class="label">Processadas</div>
+      </div>
+      <div class="perfil-card-stat">
+        <div class="num" style="color: var(--orange);">{{ stats.n_pendencias|default(0) }}</div>
+        <div class="label">Pendências</div>
+      </div>
+      <div class="perfil-card-stat">
+        <div class="num" style="font-size: 14pt;">
+          {% if stats.ultima_admissao %}
+            {{ stats.ultima_admissao[:10] }}
+          {% else %}
+            —
+          {% endif %}
+        </div>
+        <div class="label">Última admissão</div>
+      </div>
+    </div>
+  </div>
+
+  {# ── Card 3: Cargos frequentes ─────────────────────────── #}
+  {% set cargos = perfil.cargos_frequentes or {} %}
+  {% set sal_manuais = perfil.salarios_manuais_por_cargo or {} %}
+  <div class="card">
+    <h2 class="card-title">Cargos frequentes</h2>
+    <p class="small muted mb-12">
+      v2.16.39 — você pode <strong>fixar um salário</strong> por cargo. Vale
+      quando o cliente esquece de informar (ex.: <em>"CONFIRMAR COM O DA MESMA
+      FUNÇÃO"</em>). Sobrescreve a média histórica.
+    </p>
+    {% if cargos %}
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Cargo</th>
+            <th class="nowrap">Nº</th>
+            <th class="nowrap">Média histórica</th>
+            <th class="nowrap">Salário fixo (manual)</th>
+            <th class="nowrap">Função ID</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for nome, dados in cargos.items()|sort(attribute='1.n_vezes', reverse=true) %}
+            {% set sal_manual = sal_manuais.get(nome) %}
+            <tr>
+              <td><strong>{{ nome }}</strong></td>
+              <td class="nowrap">{{ dados.n_vezes|default(0) }}</td>
+              <td class="nowrap">
+                {% if dados.salario_padrao %}
+                  R$ {{ "%.2f"|format(dados.salario_padrao) }}
+                {% else %}
+                  <span class="muted">—</span>
+                {% endif %}
+              </td>
+              <td class="nowrap">
+                <form method="POST"
+                      action="{{ url_for('perfis_salvar_salario_cargo', remetente=remetente) }}"
+                      style="display:flex; gap:6px; align-items:center; margin:0">
+                  <input type="hidden" name="cargo" value="{{ nome }}">
+                  <input type="text" name="valor"
+                         value="{% if sal_manual %}{{ '%.2f'|format(sal_manual)|replace('.', ',') }}{% endif %}"
+                         placeholder="ex: 1800,00"
+                         inputmode="decimal" maxlength="12"
+                         style="width:110px; padding:4px 8px; font-size:13px;"
+                         autocomplete="off">
+                  <button type="submit" class="btn btn-primary btn-xs"
+                          title="Salvar salário fixo pra esse cargo (deixe vazio pra remover)">
+                    Salvar
+                  </button>
+                </form>
+              </td>
+              <td class="nowrap">
+                {% if dados.funcao_id_frequente %}
+                  <code>{{ dados.funcao_id_frequente }}</code>
+                {% else %}
+                  <span class="muted">—</span>
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="muted mb-0">Nenhum cargo registrado ainda.</p>
+    {% endif %}
+  </div>
+
+  {# ── Card 4: Padrões aprendidos ────────────────────────── #}
+  {% set omissoes = (perfil.padroes_aprendidos or {}).get("omissoes_habituais") or [] %}
+  <div class="card">
+    <h2 class="card-title">Padrões aprendidos</h2>
+    {% if omissoes %}
+      <div class="perfil-omissoes">
+        <strong>Esse remetente costuma OMITIR:</strong>
+        {{ omissoes|join(", ") }}
+      </div>
+      <p class="muted small mb-0">
+        Padrão calculado a partir das últimas 5 admissões. O sistema usa essa
+        info pra avisar o Claude no próximo email.
+      </p>
+    {% else %}
+      <p class="muted mb-0">
+        Nenhum padrão claro detectado ainda (precisa de mais admissões).
+      </p>
+    {% endif %}
+  </div>
+
+  {# ── Card 4b: Defaults quando o remetente não envia certos dados (v2.16.4) ─ #}
+  {% set defaults = perfil.defaults_quando_ausente or {} %}
+  {% set end_def = defaults.endereco or {} %}
+  <div class="card">
+    <h2 class="card-title">Dados padrão quando o remetente não envia</h2>
+    <div class="card-acao-necessaria" style="border-left-width:3px; margin-bottom:14px; padding:12px 14px;">
+      <strong style="color:var(--orange-dark);">⚠ Use só em casos excepcionais</strong>
+      <p class="small muted mb-0" style="margin-top:4px;">
+        Endereço default só faz sentido quando o local de TRABALHO é o
+        local de RESIDÊNCIA dos funcionários — fazendas, sítios, hotéis
+        que alojam peões/colaboradores em moradia da própria propriedade.
+        Para empresas urbanas comuns (transportadora, comércio, indústria),
+        cada funcionário tem seu próprio endereço — <strong>NÃO cadastre
+        default aqui</strong>; deixe vazio e o pipeline cobra o comprovante
+        do cliente quando faltar.
+      </p>
+    </div>
+    <form method="POST"
+          action="{{ url_for('perfis_salvar_defaults', remetente=remetente) }}">
+
+      <h3 style="font-size: 13pt; margin-top: 8px;">Endereço de residência padrão</h3>
+      <p class="small muted mb-8">
+        Aplicado quando a admissão chega sem CEP/rua/bairro/cidade. Use
+        o endereço da empresa pra fazendas/produtores rurais.
+      </p>
+      <div class="form-grid">
+        <div class="form-group">
+          <label for="def_cep">CEP</label>
+          <input type="text" id="def_cep" name="cep"
+                 value="{{ end_def.cep|default('') }}"
+                 placeholder="76530-000"
+                 pattern="[0-9]{5}-?[0-9]{3}" maxlength="9" autocomplete="off">
+        </div>
+        <div class="form-group">
+          <label for="def_rua">Rua / Endereço</label>
+          <input type="text" id="def_rua" name="rua"
+                 value="{{ end_def.rua|default('') }}"
+                 placeholder="ESTRADA NOVO MUNDO" autocomplete="off">
+        </div>
+        <div class="form-group">
+          <label for="def_numero">Número</label>
+          <input type="text" id="def_numero" name="numero"
+                 value="{{ end_def.numero|default('') }}"
+                 placeholder="0 = sem número"
+                 inputmode="numeric" autocomplete="off">
+          <small class="muted">Zona rural costuma ser 0 (DP marca "sem número" no Desktop).</small>
+        </div>
+        <div class="form-group">
+          <label for="def_bairro">Bairro</label>
+          <input type="text" id="def_bairro" name="bairro"
+                 value="{{ end_def.bairro|default('') }}"
+                 placeholder="ZONA RURAL" autocomplete="off">
+        </div>
+        <div class="form-group">
+          <label for="def_cidade">Cidade</label>
+          <input type="text" id="def_cidade" name="cidade"
+                 value="{{ end_def.cidade|default('') }}"
+                 placeholder="MUNDO NOVO" autocomplete="off">
+        </div>
+        <div class="form-group">
+          <label for="def_uf">UF</label>
+          <input type="text" id="def_uf" name="uf"
+                 value="{{ end_def.uf|default('') }}"
+                 maxlength="2" placeholder="GO" autocomplete="off"
+                 style="text-transform: uppercase;">
+        </div>
+      </div>
+
+      <h3 style="font-size: 13pt; margin-top: 16px;">ASO (Atestado de Saúde Ocupacional)</h3>
+      <div class="form-row">
+        <label class="checkbox-row">
+          <input type="checkbox" name="omitir_aso" value="on"
+                 {% if defaults.omitir_aso %}checked{% endif %}>
+          Esse remetente <strong>não envia ASO</strong> — não bloquear admissão por causa disso
+        </label>
+      </div>
+
+      <div class="form-group mt-16">
+        <label for="default_observacao">Observação interna (opcional)</label>
+        <input type="text" id="default_observacao" name="default_observacao"
+               value="{{ defaults._observacao|default('') }}"
+               placeholder="Ex.: FAZENDA MAURICIO — peões moram no alojamento; CPF do dono no lugar de CNPJ">
+      </div>
+
+      <div class="btn-row mt-16">
+        <button type="submit" class="btn btn-primary">Salvar dados padrão</button>
+      </div>
+    </form>
+  </div>
+
+  {# ── Card 5: Anotações do operador ─────────────────────── #}
+  <div class="card">
+    <h2 class="card-title">Anotações do operador</h2>
+    <form method="POST"
+          action="{{ url_for('perfis_salvar_observacoes', remetente=remetente) }}">
+      <div class="form-group">
+        <label for="nome_apresentacao">Nome de apresentação (opcional)</label>
+        <input type="text" id="nome_apresentacao" name="nome_apresentacao"
+               value="{{ perfil.nome_apresentacao|default('') }}"
+               placeholder="Ex.: Drogaria Primavera">
+        <small class="muted">Substitui o email na UI quando preenchido.</small>
+      </div>
+
+      <div class="form-group">
+        <label for="observacoes">Observações</label>
+        <textarea id="observacoes" name="observacoes"
+                  class="perfil-anotacoes-textarea"
+                  placeholder="Anote aqui...">{{ perfil.observacoes_operador|default('') }}</textarea>
+        <small class="muted">
+          Dica: use pra anotar coisas tipo: "Robert tira férias em julho",
+          "Esse cliente é o do Robson da terceirizada", "Sempre pede pra cadastrar
+          como CLT mesmo sendo estagiário".
+        </small>
+      </div>
+
+      <div class="btn-row">
+        <button type="submit" class="btn btn-primary">Salvar anotações</button>
+      </div>
+    </form>
+
+    {% if perfil.atualizado_em %}
+      <p class="muted small mb-0" style="margin-top: 8px;">
+        Atualizado em: {{ perfil.atualizado_em }}
+      </p>
+    {% endif %}
+  </div>
+
+{% endblock %}

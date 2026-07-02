@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+
+{% block nav %}perfis{% endblock %}
+{% block titulo %}Perfis de remetente{% endblock %}
+
+{% block header_actions %}
+  <form method="POST" action="{{ url_for('perfis_recalcular') }}"
+        onsubmit="return confirm('Recalcular TODOS os perfis lendo cada payload de novo? Pode demorar alguns segundos.');"
+        style="display: inline;">
+    <button type="submit" class="btn btn-secondary">Recalcular tudo</button>
+  </form>
+{% endblock %}
+
+{% block conteudo %}
+
+  <div class="card">
+    <p class="muted mb-0">
+      Cada email de cliente vira um perfil. O sistema aprende cargos, salários,
+      padrões. Quanto mais admissões processadas, mais inteligente fica.
+    </p>
+  </div>
+
+  {% if not perfis %}
+    <div class="card">
+      <p class="muted mb-0">
+        Nenhum perfil ainda. Quando admissões forem processadas, vão aparecer aqui.
+      </p>
+    </div>
+  {% else %}
+    <div class="card">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Remetente</th>
+            <th>Nome apresentação</th>
+            <th class="nowrap">Contratantes</th>
+            <th class="nowrap">Total</th>
+            <th class="nowrap">Processadas</th>
+            <th class="nowrap">Pendências</th>
+            <th class="nowrap">Última admissão</th>
+            <th>Omissões habituais</th>
+            <th>Observações</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for p in perfis %}
+            {% set link = url_for('perfis_detalhe', remetente=p.remetente) %}
+            <tr class="{% if p.orfao %}perfil-orfao{% endif %}"
+                onclick="window.location='{{ link }}'"
+                style="cursor: pointer;">
+              <td><code class="small">{{ p.remetente }}</code></td>
+              <td>
+                {% if p.nome_apresentacao and p.nome_apresentacao != p.remetente %}
+                  <strong>{{ p.nome_apresentacao }}</strong>
+                {% else %}
+                  <span class="muted">—</span>
+                {% endif %}
+              </td>
+              <td class="nowrap">{{ p.n_cnpjs }}</td>
+              <td class="nowrap"><strong>{{ p.n_total }}</strong></td>
+              <td class="nowrap">
+                {% if p.n_processadas %}
+                  <span class="badge badge-ok">{{ p.n_processadas }}</span>
+                {% else %}
+                  <span class="muted">0</span>
+                {% endif %}
+              </td>
+              <td class="nowrap">
+                {% if p.n_pendencias %}
+                  <span class="badge badge-warn">{{ p.n_pendencias }}</span>
+                {% else %}
+                  <span class="muted">0</span>
+                {% endif %}
+              </td>
+              <td class="nowrap small">
+                {% if p.ultima_admissao %}
+                  {{ p.ultima_admissao[:10] }}
+                {% else %}
+                  <span class="muted">—</span>
+                {% endif %}
+              </td>
+              <td>
+                {% if p.n_omissoes %}
+                  <span class="badge badge-warn">{{ p.n_omissoes }}</span>
+                {% else %}
+                  <span class="muted">—</span>
+                {% endif %}
+              </td>
+              <td>
+                {% if p.tem_observacoes %}
+                  <span class="badge badge-ok" title="Tem anotações do operador">&#10003;</span>
+                {% else %}
+                  <span class="muted">—</span>
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% endif %}
+
+{% endblock %}

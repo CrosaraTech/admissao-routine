@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+
+{% block nav %}importar{% endblock %}
+{% block titulo %}Importar arquivos{% endblock %}
+
+{% block conteudo %}
+
+<div class="card">
+  <h2 class="card-title">Importação manual</h2>
+  <p class="muted">
+    Use quando o cliente mandou os documentos por WhatsApp, pendrive ou Drive
+    (em vez de email Gmail). O pipeline processa do mesmo jeito que processa
+    um email — só pula a etapa do Gmail. O candidato sobe pro eContador
+    normalmente; o resultado aparece em Pendentes ou Processadas.
+  </p>
+
+  <form method="POST"
+        action="{{ url_for('importar_post') }}"
+        enctype="multipart/form-data"
+        onsubmit="return confirm('Confirma o envio dos arquivos para processamento? Isso vai gastar ~US$0,15 em Claude e (se completo) cadastrar um candidato real no eContador.');">
+
+    <div class="form-group">
+      <label for="arquivos">Arquivos da admissão (PDF, PNG, JPG)</label>
+      <input type="file" id="arquivos" name="arquivos"
+             multiple required
+             accept=".pdf,.png,.jpg,.jpeg,.gif,.webp">
+      <small class="muted">
+        Aceita múltiplos arquivos (segure Ctrl pra selecionar vários).
+        Máximo 100MB total.
+      </small>
+    </div>
+
+    <div class="form-group">
+      <label for="corpo_texto">Contexto adicional (opcional)</label>
+      <textarea id="corpo_texto" name="corpo_texto" rows="4"
+                placeholder="Ex.: Admissão da Maria, CNPJ 12.345.678/0001-90, salário 2000, cliente XYZ."></textarea>
+      <small class="muted">
+        Ajuda o Claude se o CNPJ ou alguma info não estiver nos documentos.
+        Não obrigatório.
+      </small>
+    </div>
+
+    <div class="btn-row">
+      <button type="submit" class="btn btn-primary"
+              {% if importar.rodando %}disabled{% endif %}>
+        Importar e processar
+      </button>
+      <a href="{{ url_for('index') }}" class="btn btn-ghost">Cancelar</a>
+    </div>
+  </form>
+</div>
+
+{% if importar.rodando %}
+  <div class="card">
+    <h2 class="card-title">Importação em andamento</h2>
+    <p>
+      Começou em {{ importar.iniciada_em|default('—') }}.
+      Pode levar 1-2 min — recarregue esta página em breve.
+    </p>
+  </div>
+{% elif importar.terminada_em %}
+  <div class="card">
+    <h2 class="card-title">Última importação</h2>
+    <p>Terminou em {{ importar.terminada_em }}.</p>
+    {% if importar.erro %}
+      <p style="color: var(--danger)">Erro: {{ importar.erro }}</p>
+    {% elif importar.ultimo_resumo and importar.ultimo_resumo.n_arquivos %}
+      <p>{{ importar.ultimo_resumo.n_arquivos }} arquivo(s) processado(s).
+      Veja resultado em <a href="{{ url_for('pendentes') }}">Pendentes</a>
+      ou <a href="{{ url_for('processadas') }}">Processadas</a>.</p>
+    {% endif %}
+  </div>
+{% endif %}
+
+{% endblock %}

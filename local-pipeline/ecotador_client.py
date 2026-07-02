@@ -138,6 +138,53 @@ class EContadorAPI:
         })
         return empresa_id, attrs
 
+    def iterar_todas_empresas(self, page_size: int = 200, log_progresso: bool = True):
+        """Gerador que pagina GET /empresas inteira. Cada item yieldado é um
+        dict com pelo menos {id, cpfcnpj, nome}.
+
+        Usado pra popular o cache local de CNPJs cadastrados (whitelist pra
+        auto-correção de typos do OCR). Robust: erros HTTP em uma página não
+        interrompem — apenas paramos e devolvemos o que conseguimos.
+
+        Args:
+            page_size: tamanho por página (cap real da API é 200)
+            log_progresso: loga "...N empresas carregadas" a cada página
+        """
+        offset = 0
+        total_emitido = 0
+        while True:
+            corr_id = uuid.uuid4().hex[:8]
+            url = f"{self.base}/empresas"
+            params = {"page[limit]": page_size, "page[offset]": offset}
+            try:
+                r = self.client.get(url, params=params)
+            except Exception as e:
+                log.warning(f"[{corr_id}] iterar_todas_empresas exception @offset={offset}: {e}")
+                break
+            if r.status_code != 200:
+                log.warning(
+                    f"[{corr_id}] iterar_todas_empresas HTTP {r.status_code} @offset={offset} — parando"
+                )
+                break
+
+            page_data = r.json().get("data", []) or []
+            if not page_data:
+                break
+
+            for it in page_data:
+                a = it.get("attributes") or {}
+                yield {
+                    "id": it.get("id"),
+                    "cpfcnpj": a.get("cpfcnpj") or a.get("cnpj") or "",
+                    "nome": a.get("nome") or "",
+                }
+            total_emitido += len(page_data)
+            if log_progresso:
+                log.info(f"   ...{total_emitido} empresas carregadas")
+            if len(page_data) < page_size:
+                break
+            offset += page_size
+
     # ---- Departamento -------------------------------------------
 
     def listar_departamentos(self, empresa_id: str) -> list[dict]:
@@ -199,6 +246,55 @@ class EContadorAPI:
         return deptos
 
     # ---- Candidato ----------------------------------------------
+
+    # v2.16.35: lista padrão de relationships pra include no GET de candidato.
+    # Sem isso, a API JSON:API retorna só `links` — `data.id` fica oculto e
+    # parece que o candidato está com tudo None (bug encontrado no caso
+    # GABRIEL/MAMBORE 2026-06-22). Lista enxuta porque incluir TUDO infla
+    # o response sem ganho.
+    INCLUDE_CANDIDATO_PADRAO = ",".join([
+        "empresa", "departamento", "funcao", "statusadmissao",
+        "tipoadmissao", "tipovinculotrabalhista", "categoriawdp",
+        "formapagamento", "tipoidentidade", "sexo", "raca",
+        "estadocivil", "escolaridade", "nacionalidade",
+        "paisnascimento", "naturalidade", "ufidentidade",
+        "ufctps", "estado", "statusatestadoocupacional",
+        "tipoDeDeficiencia", "pais",
+    ])
+
+    def get_candidato(
+        self,
+        candidato_id: str,
+        include: str | None = None,
+    ) -> tuple[bool, dict]:
+        """v2.16.35: GET de candidato com relationships populadas por padrão.
+
+        Sem `?include=`, a API JSON:API só devolve `links` nas relationships,
+        sem `data.id`. Quando alguém lê o resultado pensa que está tudo
+        vazio. Caso real 2026-06-22 (GABRIEL/MAMBORE): operador achou que
+        candidato 11896 tinha sido cadastrado com tudo None — na verdade
+        tinha empresa=1277, statusadmissao=1, etc., só não vinham no JSON
+        sem o include.
+
+        Returns:
+            (ok, dict) — dict contém data + included (rels expandidas)
+        """
+        inc = include or self.INCLUDE_CANDIDATO_PADRAO
+        try:
+            r = self.client.get(
+                f"{self.base}/candidatos/{candidato_id}",
+                params={"include": inc},
+            )
+            if r.status_code == 200:
+                return True, r.json()
+            log.warning(
+                f"[ecotador] GET /candidatos/{candidato_id} HTTP {r.status_code}"
+            )
+            return False, {"erro": f"HTTP {r.status_code}", "body": r.text[:500]}
+        except Exception as e:
+            log.warning(f"[ecotador] GET /candidatos/{candidato_id} falhou: {e}")
+            return False, {"erro": f"{type(e).__name__}: {e}"}
+
 
     def post_candidato(self, payload: dict) -> tuple[bool, str, str]:
         """POST principal — cria candidato no eContador.

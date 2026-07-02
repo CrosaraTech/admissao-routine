@@ -1,0 +1,28 @@
+{# v2.16.9: hierarquia visual — pendentes internas e falhas técnicas ganham
+   destaque (dot pulsante laranja) quando > 0. Processadas brilham OK; cliente
+   é estado normal de fila. #}
+<div class="counters">
+  <div class="counter-card processadas reveal">
+    <div class="counter-value">{{ contadores.processadas|default(0) }}</div>
+    <div class="counter-label">Processadas</div>
+    <div class="counter-sub">Admissões cadastradas</div>
+  </div>
+
+  <div class="counter-card pendentes-cliente reveal" data-d="1">
+    <div class="counter-value">{{ contadores.pendentes_cliente|default(0) }}</div>
+    <div class="counter-label">Pendentes (cliente)</div>
+    <div class="counter-sub">Faltam dados do empregador</div>
+  </div>
+
+  <div class="counter-card pendentes-internas reveal{% if contadores.pendentes_internas|default(0) > 0 %} has-attention{% endif %}" data-d="2">
+    <div class="counter-value">{{ contadores.pendentes_internas|default(0) }}</div>
+    <div class="counter-label">Pendentes (internas)</div>
+    <div class="counter-sub">Cadastro/depto pendente</div>
+  </div>
+
+  <div class="counter-card falhas-tecnicas reveal{% if contadores.falhas_tecnicas|default(0) > 0 %} has-attention{% endif %}" data-d="3">
+    <div class="counter-value">{{ contadores.falhas_tecnicas|default(0) }}</div>
+    <div class="counter-label">Falhas técnicas</div>
+    <div class="counter-sub">Erros no POST</div>
+  </div>
+</div>

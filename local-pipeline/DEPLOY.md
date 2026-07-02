@@ -13,8 +13,23 @@ desta pasta — basta zipar, copiar e seguir.
 | **Internet** | — | Conectividade pra Gmail, Anthropic, eContador |
 | **Disco** | ~500 MB | Pasta + venv + payloads/backups (acumulam) |
 | **Permissão** | Escrita na pasta | Tudo é local — sem permissões de admin |
+| **unrar.exe** | (opcional) | Pra descompactar `.rar` enviados pelo cliente. Sem ele, `.rar` vira pendência pedindo reenvio em PDF/zip. Ver seção 2.5. |
 
 Em Linux/Mac: `apt install python3.11 python3.11-venv` ou equivalente.
+Pra `.rar` em Linux: `apt install unrar`.
+
+## 2.5. (Opcional) unrar.exe para suporte a .rar
+
+Se você quer que o pipeline abra `.rar` enviados pelo cliente automaticamente:
+
+1. Baixe `UnRAR.exe` em https://www.rarlab.com/rar_add.htm (procura por
+   "Command-line freeware UnRAR for Windows")
+2. Coloque o arquivo direto na pasta `local-pipeline/` com nome `unrar.exe`
+   (minúsculo)
+3. Pronto — `gmail_client.py` detecta automaticamente
+
+Sem o `unrar.exe`: o pipeline avisa no log e gera pendência pedindo reenvio.
+O `.zip` funciona sem nenhuma dep extra (Python tem `zipfile` nativo).
 
 ## 2. Extrair e instalar
 

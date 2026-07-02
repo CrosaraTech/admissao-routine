@@ -210,6 +210,11 @@ def main() -> int:
           lambda: check_dep("PIL", "Pillow"))
     check("dependência: plyer (opcional, toast Windows)",
           lambda: check_dep("plyer"))
+    check("dependência: rarfile (opcional, descompactar .rar do cliente)",
+          lambda: check_dep("rarfile"))
+    check("unrar.exe (opcional, suporte a .rar)",
+          lambda: check_arquivo("unrar.exe",
+                                "baixe em rarlab.com/rar_add.htm e ponha na pasta"))
 
     secao("Arquivos essenciais")
     check("config.json", lambda: check_arquivo("config.json"))

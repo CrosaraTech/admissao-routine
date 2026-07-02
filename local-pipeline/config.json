@@ -12,11 +12,20 @@
     "email_notificacao": "pessoal@contabilidadehavai.com.br"
   },
   "anthropic": {
-    "model": "claude-sonnet-4-20250514",
-    "max_tokens": 8192,
+    "model": "claude-sonnet-4-6",
+    "max_tokens": 16384,
     "chamadas_verificacao": 2
   },
   "polling_intervalo_segundos": 300,
   "dry_run": false,
-  "auto_email_pendencias": true
+  "auto_email_pendencias": false,
+  "usar_data_atual_se_invalida": false,
+  "sempre_mandar_sem_data_admissao": true,
+  "sempre_mandar_sem_funcao": true,
+  "reprocessar_pendentes_no_polling": true,
+  "postar_sem_departamento_quando_vazio": true,
+  "pausa_entre_emails_segundos": 20,
+  "directdata_pis_habilitado": false,
+  "directdata_titulo_habilitado": false,
+  "auto_email_pendencias_modo": "rascunho"
 }

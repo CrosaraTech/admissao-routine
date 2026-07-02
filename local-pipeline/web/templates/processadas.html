@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+
+{% block nav %}processadas{% endblock %}
+{% block titulo %}Processadas ({{ total }}){% endblock %}
+
+{% block conteudo %}
+
+  {% if total == 0 %}
+    <div class="card">
+      <p class="muted mb-0">Nenhuma admissão processada ainda.</p>
+    </div>
+  {% else %}
+    {% for dia, entidades in por_dia.items() %}
+      <details class="dia-group" open>
+        <summary>
+          {{ dia }}
+          <span class="dia-count">— {{ entidades|length }} admiss{% if entidades|length == 1 %}ão{% else %}ões{% endif %}</span>
+        </summary>
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Hora</th>
+              <th>Nome</th>
+              <th>Empresa</th>
+              <th>Candidato</th>
+              <th>Procedência</th>
+              <th class="col-acao">Ação</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for e in entidades %}
+              <tr>
+                <td class="nowrap small">{{ e.hora|default("—") }}</td>
+                <td><strong>{{ e.nome|default("—") }}</strong></td>
+                <td>{{ e.empresa|default("—") }}</td>
+                <td class="nowrap">
+                  {% set proc = e.procedencia or "" %}
+                  {% set partes = proc.split("candidato ") %}
+                  {% if partes|length > 1 %}
+                    {% set resto = partes[1].split(" ")[0].rstrip(",.") %}
+                    <span class="badge badge-ok">#{{ resto }}</span>
+                  {% else %}
+                    <span class="muted">—</span>
+                  {% endif %}
+                </td>
+                <td>
+                  <span class="truncate small" title="{{ e.procedencia }}">
+                    {{ e.procedencia|default("—") }}
+                  </span>
+                </td>
+                <td class="col-acao">
+                  {% if e.msg_id %}
+                    <a class="btn btn-ghost btn-xs"
+                       href="{{ url_for('processadas_ver_payload', msg_id=e.msg_id, nome=e.nome) }}"
+                       title="Mostra os dados enviados (attributes + relationships) + opção de comparar com eContador">
+                      🔍 Ver payload
+                    </a>
+                  {% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </details>
+    {% endfor %}
+  {% endif %}
+
+{% endblock %}

@@ -1,0 +1,451 @@
+{% extends "base.html" %}
+
+{% block nav %}pendentes{% endblock %}
+{% block titulo %}Resolver: {{ entidade.nome }}{% endblock %}
+
+{% block header_actions %}
+  {# v2.16.33: ações rápidas — abrir email no Gmail + reprocessar do zero #}
+  <a class="btn btn-ghost btn-sm"
+     href="https://mail.google.com/mail/u/0/#all/{{ entidade.msg_id }}"
+     target="_blank" rel="noopener"
+     title="Abre o email original numa aba nova do Gmail">
+    ✉ Abrir no Gmail
+  </a>
+  <form method="POST"
+        action="{{ url_for('reprocessar_pendencia', msg_id=entidade.msg_id, nome=entidade.nome, cnpj=entidade.cnpj|cnpj_url) }}"
+        style="display:inline"
+        onsubmit="return confirm('Reprocessar do zero? Vai chamar o Claude de novo (~US$0.10) e regerar o payload com todos os fixes mais recentes. Útil quando você cadastrou alias/salário/endereço novo depois do email cair em pendência.');">
+    <button type="submit" class="btn btn-secondary btn-sm"
+            title="Reabre o email + chama o Claude de novo + aplica todos os cadastros novos">
+      🔄 Reprocessar email
+    </button>
+  </form>
+  <a class="btn btn-ghost btn-sm" href="{{ url_for('pendentes') }}">← Voltar à lista</a>
+{% endblock %}
+
+{% block conteudo %}
+
+  <nav aria-label="Trilha" class="breadcrumb"><a href="{{ url_for('pendentes') }}">Pendentes</a> › {{ entidade.nome }}</nav>
+
+  <div class="card">
+    <h2 class="card-title">Identificação</h2>
+    <div class="grid-attrs">
+      <div class="attr">
+        <span class="attr-label">Nome</span>
+        <span class="attr-value">{{ entidade.nome|default("—") }}</span>
+      </div>
+      <div class="attr">
+        <span class="attr-label">Empresa</span>
+        <span class="attr-value">{{ entidade.empresa|default("—") }}</span>
+      </div>
+      <div class="attr">
+        <span class="attr-label">
+          {% if entidade.cnpj and entidade.cnpj|length == 11 %}CPF{% else %}CNPJ{% endif %}
+        </span>
+        <span class="attr-value">
+          {% if entidade.cnpj and entidade.cnpj|length == 14 %}
+            {{ entidade.cnpj[:2] }}.{{ entidade.cnpj[2:5] }}.{{ entidade.cnpj[5:8] }}/{{ entidade.cnpj[8:12] }}-{{ entidade.cnpj[12:] }}
+          {% elif entidade.cnpj and entidade.cnpj|length == 11 %}
+            {{ entidade.cnpj[:3] }}.{{ entidade.cnpj[3:6] }}.{{ entidade.cnpj[6:9] }}-{{ entidade.cnpj[9:] }}
+          {% else %}
+            {{ entidade.cnpj|default("—") }}
+          {% endif %}
+        </span>
+      </div>
+      <div class="attr">
+        <span class="attr-label">Recebido em</span>
+        <span class="attr-value">{{ entidade.ts|default("—") }}</span>
+      </div>
+      <div class="attr">
+        <span class="attr-label">Categoria</span>
+        <span class="attr-value">
+          {% if entidade.categoria == "pendente_cliente" %}
+            <span class="badge badge-cliente">cliente</span>
+          {% elif entidade.categoria == "pendente_interna" %}
+            <span class="badge badge-interna">interna</span>
+          {% elif entidade.categoria == "falha_tecnica" %}
+            <span class="badge badge-falha">falha técnica</span>
+          {% else %}
+            <span class="badge">{{ entidade.categoria }}</span>
+          {% endif %}
+        </span>
+      </div>
+      <div class="attr">
+        <span class="attr-label">Cargo (IA)</span>
+        <span class="attr-value">
+          {% if entidade.cargo_ia %}
+            <span class="badge badge-cargo">{{ entidade.cargo_ia }}</span>
+          {% else %}
+            <span class="muted">(não extraído)</span>
+          {% endif %}
+        </span>
+      </div>
+      <div class="attr" style="grid-column: 1 / -1;">
+        <span class="attr-label">Procedência</span>
+        <span class="attr-value small">{{ entidade.procedencia|default("—") }}</span>
+      </div>
+    </div>
+  </div>
+
+  {% if duplicatas %}
+    <div class="box-aviso">
+      <strong>Atenção:</strong> encontrei {{ duplicatas|length }} candidato{% if duplicatas|length != 1 %}s{% endif %} já cadastrado{% if duplicatas|length != 1 %}s{% endif %} com esse CPF.
+      <ul>
+        {% for d in duplicatas %}
+          <li>
+            Candidato <strong>#{{ d.candidato_id }}</strong>
+            {% if d.nome %}— {{ d.nome }}{% endif %}
+            {% if d.ts %}({{ d.ts }}){% endif %}
+            {% if d.origem %} via {{ d.origem }}{% endif %}
+            {% if d.mesma_empresa %}
+              · <span class="badge badge-cliente">mesma empresa</span>
+            {% endif %}
+          </li>
+        {% endfor %}
+      </ul>
+      <p class="small muted mb-0">Marque a opção abaixo no formulário se mesmo assim quiser cadastrar um novo registro.</p>
+    </div>
+  {% endif %}
+
+  <div class="card">
+    <h2 class="card-title">Dados extraídos pelo Claude</h2>
+    {% if attrs %}
+      <div class="grid-attrs">
+        {% set campos_mostrar = [
+          ("nome", "Nome"),
+          ("cpf", "CPF"),
+          ("nascimento", "Nascimento"),
+          ("sexo", "Sexo"),
+          ("estadocivil", "Estado civil"),
+          ("nomemae", "Nome da mãe"),
+          ("nomepai", "Nome do pai"),
+          ("admissao", "Admissão"),
+          ("salario", "Salário"),
+          ("nomecargo", "Cargo"),
+          ("cep", "CEP"),
+          ("rua", "Rua"),
+          ("numero", "Número"),
+          ("bairro", "Bairro"),
+          ("cidade", "Cidade"),
+          ("uf", "UF"),
+          ("rg", "RG"),
+          ("rgorgaoexpedidor", "Órgão emissor"),
+          ("rgdataemissao", "RG — emissão"),
+          ("ctps", "CTPS"),
+          ("ctpsserie", "CTPS série"),
+          ("pis", "PIS"),
+          ("tituloeleitor", "Título eleitor"),
+          ("banco", "Banco"),
+          ("agencia", "Agência"),
+          ("conta", "Conta"),
+          ("telefone", "Telefone"),
+          ("celular", "Celular"),
+          ("email", "Email"),
+        ] %}
+        {% for chave, rotulo in campos_mostrar %}
+          {% set val = attrs.get(chave) %}
+          <div class="attr">
+            <span class="attr-label">{{ rotulo }}</span>
+            {% if val in (None, "", 0) %}
+              <span class="attr-value empty">(não extraído)</span>
+            {% else %}
+              <span class="attr-value">{{ val }}</span>
+            {% endif %}
+          </div>
+        {% endfor %}
+      </div>
+    {% else %}
+      <div class="aviso-vazio">
+        <p class="mb-8">
+          <strong>Nenhum payload no disco pra esta pendência.</strong>
+        </p>
+        <p class="muted small mb-8">
+          Isso acontece quando o Claude marcou o email todo como pendente
+          antes da v2.15.3 (antes do fix que sempre salva payload parcial).
+          O reprocessamento custa ~US$0.15 em Claude e gera o payload novo —
+          aí você pode completar o que falta (ex.: salário) e enviar.
+        </p>
+        <form method="POST"
+              action="{{ url_for('reprocessar_pendencia', msg_id=entidade.msg_id, nome=entidade.nome, cnpj=entidade.cnpj|cnpj_url) }}"
+              style="display:inline"
+              onsubmit="return confirm('Reprocessar este email vai gastar ~US$0.15 em Claude. Continuar?');">
+          <button type="submit" class="btn btn-primary btn-sm">Reprocessar email</button>
+        </form>
+        <small class="muted">ou use "Marcar como resolvido manualmente" se já cadastrou no Desktop.</small>
+      </div>
+    {% endif %}
+    {% if payload_path %}
+      <p class="small muted mt-16 mb-0">Payload: <code>{{ payload_path }}</code></p>
+    {% endif %}
+  </div>
+
+  {% if not entidade.cnpj or (entidade.cnpj|length != 14 and entidade.cnpj|length != 11) %}
+    <div class="card card-acao-necessaria">
+      <h2 class="card-title">Informar CNPJ ou CPF da empresa contratante</h2>
+      <p class="small muted mb-12">
+        O Claude não conseguiu identificar o documento da empresa
+        {% if entidade.empresa %}<strong>{{ entidade.empresa }}</strong>{% endif %}
+        nos arquivos. Informe abaixo — o valor fica salvo como override e o
+        próximo reprocesso usa direto, sem precisar adivinhar.
+        <br><br>
+        <strong>CNPJ</strong> (14 dígitos) pra empresa pessoa jurídica, ou
+        <strong>CPF</strong> (11 dígitos) quando o contratante é cadastrado
+        no eContador como pessoa física (produtor rural, autônomo, etc.).
+      </p>
+      <form method="POST"
+            action="{{ url_for('corrigir_cnpj_email', msg_id=entidade.msg_id, nome=entidade.nome, cnpj=entidade.cnpj|cnpj_url) }}">
+        <div class="form-row" style="display:flex; gap:8px; align-items:flex-end;">
+          <div class="form-group" style="flex:1; margin:0;">
+            <label for="cnpj_novo">CNPJ ou CPF</label>
+            <input type="text" id="cnpj_novo" name="cnpj_novo"
+                   placeholder="00.000.000/0000-00  ou  000.000.000-00"
+                   inputmode="numeric"
+                   maxlength="18"
+                   required autocomplete="off">
+            <small class="muted">
+              14 dígitos (CNPJ) ou 11 dígitos (CPF) — aceita com ou sem pontuação
+            </small>
+          </div>
+          <button type="submit" class="btn btn-primary">Salvar</button>
+        </div>
+      </form>
+      <p class="small muted mt-12 mb-0">
+        Depois de salvar, clique em <strong>"Reprocessar email"</strong> abaixo
+        (ou aguarde a próxima passada do polling) — o Claude vai usar este
+        documento direto e provavelmente vai cadastrar o candidato sem mais
+        intervenção.
+      </p>
+    </div>
+  {% endif %}
+
+  {% if attrs %}
+    <div class="card">
+      <h2 class="card-title">Aplicar correções e POSTar</h2>
+      <form method="POST"
+            action="{{ url_for('postar_pendencia', msg_id=entidade.msg_id, nome=entidade.nome, cnpj=entidade.cnpj|cnpj_url) }}">
+        <div class="form-grid">
+          <div class="form-group">
+            <label for="salario">Salário (R$)</label>
+            <input type="text" id="salario" name="salario"
+                   value="{{ attrs.get('salario', '')|salario_num }}"
+                   placeholder="ex.: 1500.00"
+                   inputmode="decimal" autocomplete="off">
+            <small class="muted">Aceita "1500", "1.500,00" ou "R$ 1.500,00"</small>
+          </div>
+          <div class="form-group">
+            <label for="admissao">Data de admissão</label>
+            <input type="date" id="admissao" name="admissao"
+                   value="{{ attrs.get('admissao', '')|data_iso }}"
+                   min="2020-01-01" autocomplete="off">
+          </div>
+          <div class="form-group">
+            <label for="nascimento">Data de nascimento</label>
+            <input type="date" id="nascimento" name="nascimento"
+                   value="{{ attrs.get('nascimento', '')|data_iso }}"
+                   min="1920-01-01" max="{{ now_iso[:10] }}"
+                   autocomplete="off">
+          </div>
+          <div class="form-group">
+            <label for="cep">CEP</label>
+            <input type="text" id="cep" name="cep"
+                   value="{{ attrs.get('cep', '') }}"
+                   placeholder="só preencher se faltar"
+                   inputmode="numeric"
+                   pattern="[0-9]{5}-?[0-9]{3}"
+                   maxlength="9" autocomplete="off">
+          </div>
+          <div class="form-group">
+            <label for="rua">Rua</label>
+            <input type="text" id="rua" name="rua"
+                   value="{{ attrs.get('rua', '') }}">
+          </div>
+          <div class="form-group">
+            <label for="numero">Número</label>
+            <input type="text" id="numero" name="numero"
+                   value="{{ attrs.get('numero', '') }}"
+                   placeholder="0 = sem número (marcar manualmente)"
+                   inputmode="numeric" autocomplete="off">
+            <small class="muted">Deixe 0 se o imóvel não tem número — o DP marca 'sem número' no Desktop.</small>
+          </div>
+          <div class="form-group">
+            <label for="bairro">Bairro</label>
+            <input type="text" id="bairro" name="bairro"
+                   value="{{ attrs.get('bairro', '') }}">
+          </div>
+          <div class="form-group">
+            <label for="cidade">Cidade</label>
+            <input type="text" id="cidade" name="cidade"
+                   value="{{ attrs.get('cidade', '') }}">
+          </div>
+        </div>
+
+        {% if duplicatas %}
+          <div class="form-row mt-16">
+            <label class="checkbox-row">
+              <input type="checkbox" name="permitir_duplicata" value="on">
+              Cadastrar mesmo assim, ignorando duplicata
+            </label>
+          </div>
+        {% endif %}
+
+        <div class="btn-row mt-16">
+          <span id="submit-spinner" class="htmx-indicator"><span class="spinner"></span> Enviando…</span>
+          <button type="submit" class="btn btn-primary"
+                  onclick="return confirm('Confirma o envio de {{ entidade.nome|e }} para o eContador? Esta ação cria um candidato real e não pode ser desfeita.')">Enviar para o eContador</button>
+          {# v2.16.29: botão pra envio forçado — abre modal de preview #}
+          <button type="button" class="btn btn-ghost"
+                  onclick="document.getElementById('modal-forcar-envio').classList.add('show')">
+            Enviar mesmo assim
+          </button>
+          <a class="btn btn-ghost" href="{{ url_for('pendentes') }}">Cancelar</a>
+        </div>
+      </form>
+    </div>
+
+    {# Modal de preview pra forçar envio (v2.16.29) #}
+    {% set CAMPOS_PESSOAIS = [
+      ('nome', 'Nome'), ('cpf', 'CPF'), ('nascimento', 'Nascimento'),
+      ('sexo', 'Sexo'), ('estadocivil', 'Estado civil'),
+      ('nomedamae', 'Nome da mãe'), ('nomedopai', 'Nome do pai'),
+      ('municipionascimento', 'Naturalidade'),
+    ] %}
+    {% set CAMPOS_CONTRATO = [
+      ('admissao', 'Data admissão'), ('salario', 'Salário'),
+      ('nomecargo', 'Cargo'), ('diascontratoexperiencia', 'Dias experiência'),
+    ] %}
+    {% set CAMPOS_DOCS = [
+      ('identidade', 'RG'), ('dataidentidade', 'Data RG'),
+      ('orgaoemissoridentidade', 'Órgão emissor'),
+      ('ctps', 'CTPS'), ('seriectps', 'Série CTPS'),
+      ('pis', 'PIS'), ('tituloeleitor', 'Título eleitor'),
+    ] %}
+    {% set CAMPOS_ENDERECO = [
+      ('cep', 'CEP'), ('rua', 'Rua'), ('numero', 'Número'),
+      ('bairro', 'Bairro'), ('cidade', 'Cidade'),
+    ] %}
+    {% set CAMPOS_CONTATO = [
+      ('celular', 'Celular'), ('telefone', 'Telefone'), ('email', 'Email'),
+    ] %}
+    <div class="modal-backdrop" id="modal-forcar-envio" role="dialog" aria-modal="true">
+      <div class="modal" style="width:min(680px,100%);">
+        <h3>Enviar mesmo assim</h3>
+        <p class="small muted">
+          Revisa o que vai pro eContador. Os campos em <strong>verde</strong>
+          estão preenchidos; em <strong>vermelho</strong> estão vazios (defaults
+          do escritório serão aplicados quando aplicável: sexo=F, raça=Branca,
+          estado civil=Solteiro, escolaridade=Médio completo, etc.).
+        </p>
+        {# v2.16.36: aviso CRÍTICO sobre empresa #}
+        <div style="background:rgba(198,40,40,.08); border:1px solid rgba(198,40,40,.35); border-left:4px solid var(--danger); padding:12px 14px; border-radius:6px; margin:14px 0;">
+          <strong style="color:var(--danger);">⚠ ATENÇÃO — verifique a EMPRESA antes</strong>
+          <p class="small mb-0" style="margin-top:4px;">
+            Esse botão NÃO funciona se a empresa (CNPJ <code>{{ entidade.cnpj|default('?') }}</code>)
+            não estiver cadastrada no eContador.
+            Sem empresa válida, o candidato fica órfão e <strong>NÃO desce
+            pro Alterdata Desktop</strong> mesmo com POST OK. Cadastre a empresa
+            primeiro no eContador se for o caso.
+            <br><br>
+            Lição do incidente Gabriel/MAMBORE (2026-06-22): a empresa não estava
+            cadastrada, o POST passou, candidato 11896 ficou órfão até o cadastro
+            ser feito depois.
+          </p>
+        </div>
+
+        <div style="max-height:50vh; overflow-y:auto; padding:4px 0; margin: 14px 0;">
+          {% for titulo, lista_campos in [
+            ('Pessoais', CAMPOS_PESSOAIS),
+            ('Contratuais', CAMPOS_CONTRATO),
+            ('Documentos', CAMPOS_DOCS),
+            ('Endereço', CAMPOS_ENDERECO),
+            ('Contato', CAMPOS_CONTATO),
+          ] %}
+          <h4 style="font-family:var(--font-display); font-size:14pt; margin:14px 0 6px;
+                     color: var(--text-body); border-bottom:1px solid var(--border-card);
+                     padding-bottom:4px;">{{ titulo }}</h4>
+          <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:6px 14px;">
+            {% for chave, rotulo in lista_campos %}
+              {% set v = attrs.get(chave) %}
+              {% set preenchido = v not in (None, '', 0, '0', 0.0) %}
+              <div style="display:flex; align-items:baseline; gap:6px; font-size:13px;
+                          padding:4px 8px; border-radius:4px;
+                          {% if preenchido %}background:rgba(46,125,50,.06); border-left:2px solid var(--success);
+                          {% else %}background:rgba(198,40,40,.04); border-left:2px solid var(--danger);{% endif %}">
+                <span style="color:{% if preenchido %}var(--success){% else %}var(--danger){% endif %};
+                             font-weight:700; font-size:10px;">
+                  {% if preenchido %}✓{% else %}✗{% endif %}
+                </span>
+                <span style="color:var(--text-muted); font-size:11px; min-width:80px;">{{ rotulo }}:</span>
+                <span style="color:var(--text-body); font-weight:500; word-break:break-word;">
+                  {% if preenchido %}{{ v }}{% else %}<em class="muted">(vazio)</em>{% endif %}
+                </span>
+              </div>
+            {% endfor %}
+          </div>
+          {% endfor %}
+        </div>
+
+        <div class="modal-row">
+          <button type="button" class="btn btn-ghost"
+                  onclick="document.getElementById('modal-forcar-envio').classList.remove('show')">
+            Cancelar
+          </button>
+          <form method="POST"
+                action="{{ url_for('postar_pendencia', msg_id=entidade.msg_id, nome=entidade.nome, cnpj=entidade.cnpj|cnpj_url) }}"
+                style="display:inline">
+            <input type="hidden" name="forcar" value="on">
+            {% if duplicatas %}<input type="hidden" name="permitir_duplicata" value="on">{% endif %}
+            <button type="submit" class="btn btn-primary"
+                    onclick="return confirm('Confirma o envio FORÇADO de {{ entidade.nome|e }}? Vai pro eContador mesmo com campos vazios.')">
+              Confirmar e enviar
+            </button>
+          </form>
+        </div>
+      </div>
+    </div>
+  {% endif %}
+
+  <div class="card">
+    <h2 class="card-title">Marcar como resolvido manualmente</h2>
+    <p class="small muted">
+      Use isto quando o operador já cadastrou o candidato diretamente no eContador
+      ou Alterdata Desktop. Adiciona uma linha "Cadastrado manualmente" na planilha.
+    </p>
+    <form method="POST"
+          action="{{ url_for('marcar_resolvido_manual', msg_id=entidade.msg_id, nome=entidade.nome, cnpj=entidade.cnpj|cnpj_url) }}">
+      <button type="submit" class="btn btn-ghost"
+              onclick="return confirm('Confirma que este candidato JÁ FOI cadastrado direto no eContador/Desktop? A pendência será fechada na planilha.')">Marcar como resolvido manualmente</button>
+    </form>
+  </div>
+
+  {% if duplicatas %}
+    <div class="card">
+      <h2 class="card-title">Histórico de tentativas</h2>
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Candidato</th>
+            <th>Nome</th>
+            <th>Data</th>
+            <th>Origem</th>
+            <th>CNPJ</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for d in duplicatas %}
+            <tr>
+              <td class="nowrap"><span class="badge badge-ok">#{{ d.candidato_id }}</span></td>
+              <td>{{ d.nome|default("—") }}</td>
+              <td class="small nowrap">{{ d.ts|default("—") }}</td>
+              <td class="small">{{ d.origem|default("—") }}</td>
+              <td class="small nowrap">
+                {{ d.cnpj|default("—") }}
+                {% if d.mesma_empresa %} <span class="badge badge-cliente">mesma</span>{% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% endif %}
+
+{% endblock %}

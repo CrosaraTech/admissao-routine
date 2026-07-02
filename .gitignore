@@ -18,6 +18,28 @@ local-pipeline/payloads/
 # Planilha de admissões registradas (contém CPF, nomes, empresas)
 local-pipeline/admissoes.xlsx
 
+# Overrides de CNPJ (correções manuais por msg_id — contém IDs de email)
+local-pipeline/cnpj_overrides.json
+
+# Overrides de função por admissão (correção manual de função quando ambígua)
+local-pipeline/funcao_overrides.json
+
+# Audit das chamadas Direct Data (contém CPFs mascarados + custos)
+local-pipeline/directdata_audit.ndjson
+
+# Cache negativo do Direct Data (CPFs que não retornaram dados)
+local-pipeline/directdata_neg_cache.json
+
+# Tracking de candidatos já postados (idempotência local)
+local-pipeline/candidatos_postados.json
+
+# State de reprocessamento de Folha de Pagamento
+local-pipeline/reprocesso_fp.json
+
+# Arquivos temporários da web e lixo de SO
+local-pipeline/web/static/*.tmp
+local-pipeline/web/static/.DS_Store
+
 # Bytecode
 __pycache__/
 *.py[cod]
@@ -42,3 +64,32 @@ local-pipeline-*.zip
 # OS
 Thumbs.db
 .DS_Store
+
+# Backups antigos (versionamento redundante)
+*.bak.py
+*.bak.md
+local-pipeline/interface_v2.13.2.bak.py
+local-pipeline/departamento.bak.py
+local-pipeline/briefing.bak.md
+
+# Binários misteriosos no root do local-pipeline (lixo)
+local-pipeline/0BEC1010
+local-pipeline/6A3C1C00
+local-pipeline/B2A0AF00
+local-pipeline/unrar.exe
+
+# PII — perfis dos remetentes (emails clientes, salários médios, histórico)
+local-pipeline/perfis_remetente.json
+
+# PII — rascunhos de resposta (nomes candidatos, empresas, dados)
+local-pipeline/rascunhos/
+
+# PII — endereços/salários padrão por empresa
+local-pipeline/enderecos_padrao_empresa.json
+local-pipeline/salarios_padrao.json
+
+# PII — aliases remetente/empresa (mapeia email cliente ↔ CNPJ)
+local-pipeline/remetente_aliases.json
+
+# Logo Crosara (arquivo grande — não é código)
+local-pipeline/Logotipo Crosara - CMYK-04.jpg

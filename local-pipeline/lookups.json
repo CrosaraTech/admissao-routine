@@ -35,39 +35,39 @@
     "Feminino": "2"
   },
   "tipos_raca": {
-    "_AVISO": "BUG OFF-BY-ONE BILATERAL — UI exibe descricao(id-1). Parda e Não-Informado são inalcançáveis via UI.",
+    "_AVISO": "FIXED 2026-07-01 — bug bilateral corrigido pelo suporte Alterdata. Round-trip API OK + UI renderiza descrição certa.",
     "_lookup_real": {
-      "0": "Indígena",
-      "1": "Branca",
-      "2": "Negra",
-      "3": "Amarela",
-      "4": "Parda",
-      "5": "Não-Informado"
+      "1": "Indígena",
+      "2": "Branca",
+      "3": "Negra",
+      "6": "Amarela",
+      "8": "Parda",
+      "9": "Não-Informado"
     },
-    "_workaround_para_enviar": {
+    "_enviar": {
       "Indígena": "1",
       "Branca": "2",
       "Negra": "3",
-      "Amarela": "4",
-      "Parda": "4",
-      "Não-Informado": "5"
+      "Amarela": "6",
+      "Parda": "8",
+      "Não-Informado": "9"
     },
-    "_default_escritorio": "2",
-    "_nota": "Default temporário id=2 (workaround bug off-by-one) — semanticamente Parda=id=4, mas UI só renderiza 1/2/3. Reverter para id=4 quando Alterdata corrigir."
+    "_default_escritorio": "8",
+    "_nota": "Ids agora não sequenciais (1,2,3,6,8,9). Confirmado via cobaia 10186 em 2026-07-01: enviei 8 → UI mostra 'Parda'."
   },
   "tipos_identidade": {
-    "_AVISO": "BUG OFF-BY-ONE — para UI exibir 'RG', enviar id=1. Confirmado 08/05/2026 matriz 10186/87/88.",
+    "_AVISO": "FIXED 2026-07-01 — bug off-by-one corrigido. Round-trip 1→1 (RG), 2→2 (RIC), 3→3 (RNE) OK.",
     "_lookup_real": {
-      "0": "RG",
-      "1": "RIC",
-      "2": "RNE"
+      "1": "RG",
+      "2": "RIC",
+      "3": "RNE"
     },
-    "_workaround_para_enviar": {
+    "_enviar": {
       "RG": "1",
       "RIC": "2",
-      "RNE": "2"
+      "RNE": "3"
     },
-    "_default_escritorio_workaround": "1"
+    "_default_escritorio": "1"
   },
   "tipos_escolaridade": {
     "1": "Analfabeto",
@@ -170,19 +170,19 @@
     "_nota": "Estrangeiros NÃO entram no fluxo automatizado — decisão DP."
   },
   "tipos_cnh": {
-    "_AVISO": "BUG OFF-BY-ONE (parcial) — mesmo padrão de raca/tipoidentidade. Enviar id+1 do que quer mostrar.",
+    "_AVISO": "FIXED 2026-07-01 — endpoint renomeado /categorias-cnh → /tipos-cnh. Round-trip API OK, off-by-one corrigido.",
     "_lookup_real": {
-      "0": "A",
-      "1": "B",
-      "2": "AB",
-      "3": "C",
-      "4": "D",
-      "5": "E",
-      "6": "AC",
-      "7": "AD",
-      "8": "AE"
+      "1": "A",
+      "2": "B",
+      "3": "AB",
+      "4": "C",
+      "5": "D",
+      "6": "E",
+      "7": "AC",
+      "8": "AD",
+      "9": "AE"
     },
-    "_workaround_para_enviar": {
+    "_enviar": {
       "A": "1",
       "B": "2",
       "AB": "3",
@@ -191,12 +191,12 @@
       "E": "6",
       "AC": "7",
       "AD": "8",
-      "AE": "8"
+      "AE": "9"
     }
   },
   "defaults_pipeline": {
     "_descricao": "Valores padrão aplicados pelo pipeline quando não informado pelo cliente",
-    "raca_id": "2",
+    "raca_id": "8",
     "nacionalidade_id": "105",
     "paisnascimento_id": "105",
     "pais_id": "105",
@@ -223,9 +223,9 @@
     "escolaridade_heuristica": "Cargo baixo = id=7 (Médio completo). Cargo alto = id=9 (Superior completo)"
   },
   "bugs_conhecidos": {
-    "bug_1_raca": "Off-by-one bilateral — Parda/Não-Informado inalcançáveis via UI.",
-    "bug_2_tipoidentidade": "Off-by-one — enviar id=1 para UI mostrar RG.",
-    "bug_3_categoriacnh": "Off-by-one parcial — enviar id+1 do desejado.",
+    "bug_1_raca": "FIXED 2026-07-01 — bilateral corrigido. IDs válidos: 1,2,3,6,8,9. Parda = 8.",
+    "bug_2_tipoidentidade": "FIXED 2026-07-01 — round-trip OK. RG=1, RIC=2, RNE=3.",
+    "bug_3_categoriacnh": "FIXED 2026-07-01 — endpoint renomeado /categorias-cnh → /tipos-cnh, ids 1-9 round-trip OK.",
     "bug_4_diascontratoexperiencia": "Desktop sempre mostra '2'. DP corrige manual.",
     "bug_5_ocorrencia": "Não chega ao Desktop. DP preenche manual.",
     "bug_6_formapagamento": "Preenche só 1 dos 2 campos do Desktop. DP corrige manual.",

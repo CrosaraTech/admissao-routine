@@ -19,6 +19,13 @@ from pathlib import Path
 
 log = logging.getLogger("admissao.depto")
 
+# v2.14.0 — sentinela "resolvido como SEM departamento".
+# Quando resolver_departamento devolve este valor, o payload_builder deve
+# OMITIR a relationship `departamento` inteira (DP atribui no Desktop).
+# Comportamento atrás de flag (config.json: postar_sem_departamento_quando_vazio)
+# porque NUNCA postamos sem depto em produção — validar com 1 cobaia antes.
+SEM_DEPARTAMENTO = "__SEM_DEPARTAMENTO__"
+
 
 CNPJS_ESPECIAIS = {
     "08867336000168",  # SOL NASCENTE TRANSPORTADORA E LOGISTICA LTDA
@@ -63,6 +70,7 @@ def resolver_departamento(
     deptos_api: list[dict],
     departamento_sugerido: str | None,
     departamentos_json_paths: list[Path],
+    permitir_sem_departamento: bool = False,
 ) -> tuple[str | None, str]:
     """Retorna (departamento_id, motivo_ou_'ok').
 
@@ -73,11 +81,26 @@ def resolver_departamento(
       deptos_api: lista [{id, nome}] vinda de GET /departamentos
       departamento_sugerido: string livre extraída pelo Claude (opcional)
       departamentos_json_paths: paths pra procurar departamentos.json
+      permitir_sem_departamento: v2.14.0 — empresa com 0 deptos no eContador
+          deixa de virar pendência interna e devolve (SEM_DEPARTAMENTO, "ok").
+          6 das 11 pendências abertas em 12/06/2026 eram exatamente esse caso.
     """
     cnpj_d = _cnpj_digitos(cnpj_empresa)
 
     if not deptos_api:
-        return None, f"Empresa {empresa_id} sem departamentos cadastrados no eContador"
+        if permitir_sem_departamento:
+            log.info(
+                f"[REGRA 0] Empresa {empresa_id} sem deptos no eContador → "
+                f"POST sem departamento (DP atribui no Desktop)"
+            )
+            return SEM_DEPARTAMENTO, "ok (sem departamento — DP atribui no Desktop)"
+        return None, (
+            f"Empresa {empresa_id} sem departamentos cadastrados no eContador. "
+            f"Saída rápida: cadastrar 1 depto (ex: GERAL) no eContador e clicar "
+            f"'Reprocessar email'. Alternativa: ligar "
+            f"postar_sem_departamento_quando_vazio no config.json (validar com "
+            f"cobaia antes — ver PATCHES.md)."
+        )
 
     # REGRA 3: empresas especiais com múltiplos deptos reais
     if cnpj_d in CNPJS_ESPECIAIS:

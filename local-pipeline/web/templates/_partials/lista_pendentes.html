@@ -1,0 +1,103 @@
+{% if total == 0 %}
+  <div class="card">
+    <p class="muted mb-0">Nenhuma pendência encontrada.</p>
+  </div>
+{% else %}
+  {% for dia, entidades in por_dia.items() %}
+    <details class="dia-group" open>
+      <summary>
+        {{ dia }}
+        <span class="dia-count">— {{ entidades|length }} pendência{% if entidades|length != 1 %}s{% endif %}</span>
+      </summary>
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Hora</th>
+            <th>Nome</th>
+            <th>Empresa</th>
+            <th>CNPJ</th>
+            <th>Cargo (IA)</th>
+            <th>Procedência</th>
+            <th class="col-acao">Ação</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for e in entidades %}
+            <tr class="{% if e.velha %}velha{% endif %}">
+              <td class="nowrap small" data-label="Hora">{{ e.hora|default("—") }}</td>
+              <td data-label="Nome"><strong>{{ e.nome|default("—") }}</strong></td>
+              <td data-label="Empresa">{{ e.empresa|default("—") }}</td>
+              <td class="small nowrap" data-label="CNPJ">
+                {% if e.cnpj and e.cnpj|length == 14 %}
+                  {{ e.cnpj[:2] }}.{{ e.cnpj[2:5] }}.{{ e.cnpj[5:8] }}/{{ e.cnpj[8:12] }}-{{ e.cnpj[12:] }}
+                {% elif e.cnpj and e.cnpj|length == 11 %}
+                  {{ e.cnpj[:3] }}.{{ e.cnpj[3:6] }}.{{ e.cnpj[6:9] }}-{{ e.cnpj[9:] }}
+                {% else %}
+                  {{ e.cnpj|default("—") }}
+                {% endif %}
+              </td>
+              <td data-label="Cargo (IA)">
+                {% if e.cargo_ia %}
+                  <span class="badge badge-cargo">{{ e.cargo_ia }}</span>
+                {% else %}
+                  <span class="muted small">—</span>
+                {% endif %}
+              </td>
+              <td class="procedencia-cell" data-label="Procedência">
+                {% if e.categoria == "pendente_cliente" %}
+                  <span class="badge badge-cliente">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                    cliente
+                  </span>
+                {% elif e.categoria == "pendente_interna" %}
+                  <span class="badge badge-interna">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.65 1.65 0 0 0-1.8-.3 1.65 1.65 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.65 1.65 0 0 0 .3-1.8 1.65 1.65 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.65 1.65 0 0 0 1.8.3H9a1.65 1.65 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.65 1.65 0 0 0 1 1.5 1.65 1.65 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.65 1.65 0 0 0-.3 1.8V9a1.65 1.65 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.65 1.65 0 0 0-1.5 1z"/></svg>
+                    interna
+                  </span>
+                {% elif e.categoria == "falha_tecnica" %}
+                  <span class="badge badge-falha">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21.7 18-9-15a2 2 0 0 0-3.4 0l-9 15A2 2 0 0 0 2 21h18a2 2 0 0 0 1.7-3z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+                    falha
+                  </span>
+                {% endif %}
+                <span class="truncate small" title="{{ e.procedencia }}"
+                      onclick="this.parentElement.classList.toggle('expanded')">
+                  {{ e.procedencia|default("—") }}
+                </span>
+              </td>
+              <td class="col-acao" data-label="Ação">
+                <div class="acao-grupo">
+                  <a class="btn btn-primary btn-sm"
+                     href="{{ url_for('pendencia_detalhe', msg_id=e.msg_id, nome=e.nome, cnpj=e.cnpj|cnpj_url) }}">
+                    Resolver →
+                  </a>
+                  {% if e.categoria == "pendente_interna" and e.msg_id %}
+                    <button type="button" class="btn btn-ghost btn-xs"
+                            data-modal-cnpj
+                            data-action="{{ url_for('corrigir_cnpj_email', msg_id=e.msg_id, nome=e.nome, cnpj=e.cnpj|cnpj_url) }}"
+                            data-nome="{{ e.nome }}"
+                            data-atual="{{ e.cnpj }}"
+                            title="Corrigir CNPJ/CPF que o Claude leu errado">
+                      CNPJ
+                    </button>
+                  {% endif %}
+                  {% if e.msg_id %}
+                    <form method="POST"
+                          action="{{ url_for('excluir_pendencia', msg_id=e.msg_id) }}"
+                          style="display:inline"
+                          onsubmit="return confirm('Excluir esta pendência?\n\nVai remover: payload, linhas da planilha, rascunhos, fingerprint e labels do Gmail.\n\nO email volta a ficar SEM classificação no Gmail — não vai reaparecer na fila a menos que receba label ADMISSÃO de novo.\n\nUse pra falhas técnicas que você não consegue resolver (ex: erro 529 do Claude).');">
+                      <button type="submit" class="btn btn-ghost btn-xs btn-danger-text"
+                              title="Remover esta pendência por completo (útil pra falhas técnicas)">
+                        🗑 Excluir
+                      </button>
+                    </form>
+                  {% endif %}
+                </div>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </details>
+  {% endfor %}
+{% endif %}

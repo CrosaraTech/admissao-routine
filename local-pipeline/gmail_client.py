@@ -8,13 +8,24 @@ local precisa: buscar emails pendentes, extrair corpo (texto) + anexos
 from __future__ import annotations
 
 import base64
+import io
 import json
 import logging
+import mimetypes
 import os
 import re
+import sys
 import unicodedata
+import zipfile
 from email.mime.text import MIMEText
+from pathlib import Path
 from typing import Iterable
+
+try:
+    import rarfile  # type: ignore
+    _HAS_RARFILE = True
+except ImportError:
+    _HAS_RARFILE = False
 
 
 # Regex pra extrair endereço de email puro de "Nome <email@host>" ou direto
@@ -49,6 +60,162 @@ GMAIL_SCOPES_DEFAULT = [
     "https://www.googleapis.com/auth/gmail.modify",
     "https://www.googleapis.com/auth/gmail.send",
 ]
+
+
+# Mimes que o Claude consegue ler via Vision
+ANEXO_MIMES_OK = ("image/png", "image/jpeg", "image/jpg",
+                  "image/webp", "image/gif", "application/pdf")
+
+# Extensoes que sao arquivos compactados — descompactamos antes de mandar
+EXT_COMPACTADO = (".zip", ".rar")
+
+# MIMEs de PDF — variações vistas em clientes reais (Gmail, Outlook, Adobe,
+# webmails antigos). NÃO inclui octet-stream/binary/vazio — esses passam pelo
+# fallback de extensão abaixo.
+PDF_MIMES = frozenset({
+    "application/pdf",
+    "application/x-pdf",
+    "application/acrobat",
+    "application/vnd.pdf",
+    "text/pdf",
+    "text/x-pdf",
+})
+
+# MIMEs genéricos — Outlook/sistemas internos mandam PDF/imagem assim quando
+# não conseguem detectar o tipo. Pra esses, confia na extensão do filename.
+MIMES_GENERICOS = frozenset({
+    "application/octet-stream",
+    "binary/octet-stream",
+    "application/binary",
+    "",
+})
+
+# Extensões confiáveis pra fallback quando MIME é genérico. APENAS formatos
+# suportados nativamente pela Anthropic Vision API (espelha EXT_TO_MIME_CANONICO
+# em claude_client.py). Aceitar aqui formatos que Claude rejeitaria depois só
+# polui o pipeline — preferimos rejeitar cedo com mensagem clara.
+#
+# Formatos REMOVIDOS: .bmp .tif .tiff .heic .heif — Anthropic não suporta.
+# Se aparecer caso real (iPhone HEIC), opções futuras:
+#   (a) Converter pra PNG via Pillow antes de enviar (custo: dependência extra)
+#   (b) Pedir ao remetente pra reenviar como JPG/PDF
+EXTENSOES_CONFIAVEIS = (
+    ".pdf",
+    ".jpg", ".jpeg", ".png", ".gif", ".webp",
+)
+
+
+def _configurar_unrar() -> None:
+    """Aponta rarfile.UNRAR_TOOL pro unrar.exe da pasta do projeto.
+
+    Procura nesta ordem:
+      1. `unrar.exe` ao lado do .py (dev) ou do .exe empacotado (PyInstaller)
+      2. PATH do sistema (fallback)
+
+    Sem unrar disponivel, rarfile.RarFile() vai lancar RarExecError no extract;
+    capturado em _extrair_compactado e tratado como "arquivo nao-extraivel".
+    """
+    if not _HAS_RARFILE:
+        return
+    candidatos: list[Path] = []
+    # Bundle do PyInstaller (--onefile descompacta em _MEIPASS)
+    base = getattr(sys, "_MEIPASS", None)
+    if base:
+        candidatos.append(Path(base) / "unrar.exe")
+    # Pasta do script/.exe rodando
+    if getattr(sys, "frozen", False):
+        candidatos.append(Path(sys.executable).parent / "unrar.exe")
+    else:
+        candidatos.append(Path(__file__).parent / "unrar.exe")
+    for p in candidatos:
+        if p.exists():
+            rarfile.UNRAR_TOOL = str(p)
+            log.debug(f"unrar configurado em {p}")
+            return
+    # Fallback: deixa o rarfile procurar no PATH
+
+
+_configurar_unrar()
+
+
+def _mime_por_extensao(filename: str) -> str:
+    """Retorna mime guess pra um arquivo extraido de compactado."""
+    guess, _ = mimetypes.guess_type(filename)
+    return guess or "application/octet-stream"
+
+
+def _extrair_compactado(filename: str, data: bytes) -> list[dict]:
+    """Tenta extrair PDFs/imagens de um .zip ou .rar em memoria.
+
+    Retorna lista de anexos no mesmo formato que `baixar_anexos`:
+        [{filename, mime, data, grupo}]
+
+    O campo `grupo` eh o nome do compactado sem extensao (ex:
+    "JENNIFFY CAROLINA LEAO DE OLIVEIRA" pra um JENNIFFY...rar). Permite ao
+    pipeline dividir requests grandes ao Claude por funcionario.
+
+    Falhas (formato corrompido, .rar sem unrar.exe disponivel, senha) → lista
+    vazia + log warning. O caller decide o que fazer (geralmente vai cair em
+    "sem anexos validos" e gerar pendencia pro cliente reenviar).
+    """
+    fname_lower = filename.lower()
+    grupo = Path(filename).stem  # nome do .rar/.zip sem extensao = funcionario
+    out: list[dict] = []
+
+    try:
+        if fname_lower.endswith(".zip"):
+            arq_iter = _iter_zip(data)
+        elif fname_lower.endswith(".rar"):
+            if not _HAS_RARFILE:
+                log.warning(f"   ⚠ '{filename}' eh .rar mas rarfile nao esta instalado")
+                return []
+            arq_iter = _iter_rar(data)
+        else:
+            return []
+
+        for membro_nome, membro_data in arq_iter:
+            membro_lower = membro_nome.lower()
+            # Ignora arquivos do sistema (macOS resource forks, Thumbs.db, etc.)
+            if "__MACOSX" in membro_nome or membro_lower.endswith((".ds_store", "thumbs.db")):
+                continue
+            mime = _mime_por_extensao(membro_nome)
+            if mime not in ANEXO_MIMES_OK:
+                log.info(f"     -> ignorado '{membro_nome}' [{mime}]")
+                continue
+            # Nome flat (sem subpastas) — facilita debug
+            nome_flat = Path(membro_nome).name
+            out.append({"filename": nome_flat, "mime": mime,
+                        "data": membro_data, "grupo": grupo})
+            log.info(f"     -> extraido '{nome_flat}' [{mime}] ({len(membro_data)} bytes)")
+    except (zipfile.BadZipFile, Exception) as e:
+        log.warning(f"   ⚠ Falha extraindo '{filename}': {type(e).__name__}: {e}")
+        return []
+
+    if not out:
+        log.warning(f"   ⚠ '{filename}' descompactado mas sem PDFs/imagens dentro")
+    return out
+
+
+def _iter_zip(data: bytes):
+    """Itera (nome, bytes) de cada arquivo dentro de um .zip em memoria."""
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        for info in zf.infolist():
+            if info.is_dir():
+                continue
+            yield info.filename, zf.read(info.filename)
+
+
+def _iter_rar(data: bytes):
+    """Itera (nome, bytes) de cada arquivo dentro de um .rar em memoria.
+
+    `rarfile` aceita BytesIO desde 4.0; precisa do binario unrar.exe no PATH
+    (ou apontado via rarfile.UNRAR_TOOL — feito em _configurar_unrar).
+    """
+    with rarfile.RarFile(io.BytesIO(data)) as rf:
+        for info in rf.infolist():
+            if info.isdir():
+                continue
+            yield info.filename, rf.read(info.filename)
 
 
 class GmailClient:
@@ -174,7 +341,8 @@ class GmailClient:
     # ---- Busca ---------------------------------------------------
 
     def buscar_emails_pendentes(
-        self, label_entrada: str, processado: str, pendente: str
+        self, label_entrada: str, processado: str, pendente: str,
+        incluir_pendentes: bool = False,
     ) -> list[dict]:
         """Retorna a PRIMEIRA mensagem de cada thread elegível.
 
@@ -183,13 +351,17 @@ class GmailClient:
         pendentes são tratadas pelo fluxo `buscar_threads_aguardando_cliente`.
 
         Lógica:
-          1. Busca threads com label_entrada SEM processado/pendente
-             (filtros -in: SEMPRE adicionados, mesmo se _label_id não achar
-             o ID local — o Gmail faz o match por nome)
+          1. Busca threads com label_entrada SEM processado (e SEM pendente,
+             exceto se `incluir_pendentes=True` — v2.9.0)
           2. Para cada thread, pega messages[0]
-          3. Se messages[0] tem label processado/pendente (checagem robusta
-             a NFC/case), pula a thread inteira
+          3. Se messages[0] tem label processado, pula
+             Se tem label pendente, pula UNLESS incluir_pendentes=True
           4. Retorna lista de messages[0] dos threads não-pulados
+
+        `incluir_pendentes=True`: o caller assume responsabilidade de remover
+        a label `pendente` antes de processar, senão o email continua marcado
+        e pode confundir a UI. Caso de uso: cliente respondeu no thread
+        pendente e queremos retentar automaticamente no próximo polling.
         """
         if not self._label_id(label_entrada):
             log.error(f"Label '{label_entrada}' não existe no Gmail")
@@ -197,12 +369,14 @@ class GmailClient:
 
         # Filtros -in: SEMPRE adicionados (Gmail faz match por nome no
         # servidor; não dependemos do _label_id local pra montar a query).
-        q = " ".join([
-            f'in:"{label_entrada}"',
-            f'-in:"{processado}"',
-            f'-in:"{pendente}"',
-        ])
-        log.info(f"Gmail query: {q}")
+        filtros = [f'in:"{label_entrada}"', f'-in:"{processado}"']
+        if not incluir_pendentes:
+            filtros.append(f'-in:"{pendente}"')
+        q = " ".join(filtros)
+        log.info(
+            f"Gmail query: {q}"
+            f"{' (incluindo pendentes pra retentar)' if incluir_pendentes else ''}"
+        )
 
         res = self.service.users().threads().list(
             userId="me", q=q, maxResults=50
@@ -216,14 +390,15 @@ class GmailClient:
             if not msgs:
                 continue
             primeira = msgs[0]
-            # Sanity check: a msg raiz NÃO pode ter processado/pendente
+            # Sanity check: a msg raiz NÃO pode ter processado
             # (defesa em profundidade caso a query não tenha filtrado bem)
             if self._msg_tem_label(primeira, processado):
                 log.info(
                     f"   Pulando thread {ts['id'][:16]}: msg raiz já tem '{processado}'"
                 )
                 continue
-            if self._msg_tem_label(primeira, pendente):
+            # Pendente: só pula se NÃO estamos no modo "incluir pendentes"
+            if not incluir_pendentes and self._msg_tem_label(primeira, pendente):
                 log.info(
                     f"   Pulando thread {ts['id'][:16]}: msg raiz já tem '{pendente}'"
                 )
@@ -287,10 +462,32 @@ class GmailClient:
         for part in self._walk_parts(msg["payload"]):
             mime = part.get("mimeType", "")
             filename = part.get("filename") or ""
+            fname_lower = filename.lower()
 
-            # Filtra por mime (image/* ou pdf) — NÃO por filename
-            if not (mime.startswith("image/") or mime == "application/pdf"):
-                # Loga se parece anexo mas tem mime fora de escopo
+            # Aceita PDFs, imagens E arquivos compactados (estes serao
+            # descompactados depois). Tudo o resto: ignora.
+            #
+            # 3 camadas de detecção (cada vez mais permissiva):
+            #   1. MIME explícito de PDF (PDF_MIMES) ou família image/*
+            #   2. Fallback: MIME genérico + extensão confiável (caso Pedro/Outlook)
+            #   3. Compactados (.zip/.rar) — extraídos depois
+            eh_compactado = fname_lower.endswith(EXT_COMPACTADO)
+            eh_pdf_explicito = mime in PDF_MIMES
+            eh_imagem_explicita = mime.startswith("image/")
+            eh_generico_confiavel = (
+                mime in MIMES_GENERICOS and fname_lower.endswith(EXTENSOES_CONFIAVEIS)
+            )
+
+            if eh_generico_confiavel and not (eh_pdf_explicito or eh_imagem_explicita):
+                mime_display = mime or "(vazio)"
+                log.info(
+                    f"   ⚠ Aceitando '{filename}' apesar do mime '{mime_display}' "
+                    f"— extensão confiável (Outlook/sistemas internos mandam assim)"
+                )
+
+            eh_pdf_ou_imagem = eh_pdf_explicito or eh_imagem_explicita or eh_generico_confiavel
+
+            if not eh_compactado and not eh_pdf_ou_imagem:
                 if filename or part.get("body", {}).get("attachmentId"):
                     partes_ignoradas.append(f"{filename or '(sem nome)'} [{mime}]")
                 continue
@@ -315,7 +512,15 @@ class GmailClient:
                 data = base64.urlsafe_b64decode(body["data"])
             else:
                 continue
-            anexos.append({"filename": filename, "mime": mime, "data": data})
+
+            if eh_compactado:
+                log.info(f"   📦 Descompactando '{filename}' ({len(data)} bytes)...")
+                extraidos = _extrair_compactado(filename, data)
+                anexos.extend(extraidos)
+            else:
+                # Anexo avulso do email — grupo vazio (nao agrupado)
+                anexos.append({"filename": filename, "mime": mime,
+                               "data": data, "grupo": ""})
 
         if partes_ignoradas:
             log.info(f"   Partes ignoradas (mime não-image/pdf): {partes_ignoradas}")

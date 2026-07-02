@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+
+{% block nav %}pendentes{% endblock %}
+{% block titulo %}Pendentes ({{ total }}){% endblock %}
+
+{% block header_actions %}
+  <span class="badge badge-cliente">cliente: {{ contadores.pendentes_cliente|default(0) }}</span>
+  <span class="badge badge-interna">interna: {{ contadores.pendentes_internas|default(0) }}</span>
+  <span class="badge badge-falha">falha técnica: {{ contadores.falhas_tecnicas|default(0) }}</span>
+{% endblock %}
+
+{% block conteudo %}
+
+  <div class="form-search">
+    <input type="search"
+           name="q"
+           placeholder="Filtrar por nome, empresa, CNPJ, cargo ou procedência…"
+           hx-get="{{ url_for('htmx_lista_pendentes') }}"
+           hx-trigger="input changed delay:300ms, search"
+           hx-target="#lista-pendentes"
+           hx-swap="innerHTML"
+           hx-indicator="#busca-spinner"
+           aria-label="Filtrar pendências">
+    <span id="busca-spinner" class="htmx-indicator"><span class="spinner"></span></span>
+  </div>
+
+  <div id="lista-pendentes">
+    {% include "_partials/lista_pendentes.html" %}
+  </div>
+
+  <!-- v2.16.9: modal pra corrigir CNPJ/CPF (substitui o prompt() antigo) -->
+  <div class="modal-backdrop" id="cnpj-modal-bd" role="dialog" aria-modal="true" aria-labelledby="cnpj-modal-title">
+    <form class="modal" id="cnpj-modal-form" method="POST" action="">
+      <h3 id="cnpj-modal-title">Corrigir CNPJ ou CPF</h3>
+      <p>Informe o documento correto da empresa-cliente de <strong id="cnpj-modal-nome"></strong>. O próximo reprocesso vai usar esse valor direto, sem pedir pro Claude adivinhar.</p>
+      <div class="form-group" style="margin-bottom:0">
+        <label for="cnpj-modal-input">CNPJ (14 dígitos) ou CPF (11 dígitos)</label>
+        <input type="text" id="cnpj-modal-input" name="cnpj_novo"
+               placeholder="00.000.000/0000-00 ou 000.000.000-00"
+               inputmode="numeric" maxlength="18" required autocomplete="off">
+        <small class="muted" id="cnpj-modal-hint">Aceita com ou sem pontuação.</small>
+      </div>
+      <div class="modal-row">
+        <button type="button" class="btn btn-ghost" data-modal-close>Cancelar</button>
+        <button type="submit" class="btn btn-primary">Salvar</button>
+      </div>
+    </form>
+  </div>
+
+  <script>
+    (function(){
+      var bd = document.getElementById("cnpj-modal-bd");
+      var form = document.getElementById("cnpj-modal-form");
+      var input = document.getElementById("cnpj-modal-input");
+      var nomeEl = document.getElementById("cnpj-modal-nome");
+      function open(action, nome, atual){
+        form.action = action;
+        nomeEl.textContent = nome || "(?)";
+        input.value = atual || "";
+        bd.classList.add("show");
+        setTimeout(function(){ input.focus(); input.select(); }, 30);
+      }
+      function close(){ bd.classList.remove("show"); }
+      document.body.addEventListener("click", function(e){
+        var btn = e.target.closest("[data-modal-cnpj]");
+        if (btn) {
+          e.preventDefault();
+          open(btn.getAttribute("data-action"), btn.getAttribute("data-nome"), btn.getAttribute("data-atual"));
+          return;
+        }
+        if (e.target.matches("[data-modal-close]") || e.target === bd) close();
+      });
+      document.addEventListener("keydown", function(e){
+        if (e.key === "Escape" && bd.classList.contains("show")) close();
+      });
+    })();
+  </script>
+
+{% endblock %}

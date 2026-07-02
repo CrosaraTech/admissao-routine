@@ -10,3 +10,15 @@ openpyxl>=3.1.0
 plyer>=2.1.0
 # Opcional: logo Crosara na sidebar da UI (se faltar, fallback pra texto)
 Pillow>=10.0.0
+# Descompactar .rar enviados pelo cliente. Precisa do binario unrar.exe
+# (ou unrar/rar no PATH em Linux). .zip eh nativo via zipfile da stdlib.
+rarfile>=4.2
+# Comprime PDFs grandes pra caber no limite de 32MB da API Anthropic.
+# Re-renderiza paginas em DPI menor quando bate 413 Payload Too Large.
+PyMuPDF>=1.24.0
+# v2.15.0: interface web Flask + HTMX (acesso pela LAN, mesmo PC).
+# HTMX e Jinja vem inclusos no Flask, nao precisam de package separado.
+Flask>=3.0.0
+# Production-grade WSGI server pro Flask em produção. Sem ele cai pro
+# Werkzeug dev server (que loga warning na inicialização).
+waitress>=3.0.0

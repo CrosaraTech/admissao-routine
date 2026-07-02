@@ -1,0 +1,187 @@
+{% extends "base.html" %}
+
+{% block nav %}dashboard{% endblock %}
+{% block titulo %}Dashboard{% endblock %}
+{% block eyebrow %}<span class="eyebrow">Departamento Pessoal · Crosara Contabilidade</span>{% endblock %}
+
+{% block header_actions %}
+  <a href="{{ url_for('importar_form') }}" class="btn btn-secondary">Importar arquivos</a>
+  <form method="POST"
+        action="{{ url_for('atualizar_agora') }}"
+        hx-post="{{ url_for('atualizar_agora') }}"
+        hx-target="#status-passada-box"
+        hx-swap="innerHTML"
+        style="display:inline">
+    <button type="submit" class="btn btn-primary"
+            hx-disabled-elt="this" hx-indicator="#atualizar-spinner">Atualizar agora</button>
+    <span id="atualizar-spinner" class="htmx-indicator"><span class="spinner"></span> Rodando passada…</span>
+  </form>
+{% endblock %}
+
+{% block conteudo %}
+
+  <div style="display:flex; justify-content:flex-end; margin: -8px 0 12px;">
+    <span class="live-indicator" aria-live="polite">
+      <span class="live-dot" aria-hidden="true"></span>
+      Auto-atualizando a cada 30s
+    </span>
+  </div>
+
+  <div id="contadores-box"
+       hx-get="{{ url_for('htmx_contadores') }}"
+       hx-trigger="every 30s"
+       hx-swap="innerHTML">
+    {% include "_partials/contadores.html" %}
+  </div>
+
+  <div class="grid-2">
+    <div class="card card-interativo reveal" data-d="1">
+      <h2 class="card-title">Última passada</h2>
+      <div id="status-passada-box"
+           hx-get="{{ url_for('htmx_status_passada') }}"
+           hx-trigger="every 30s"
+           hx-swap="innerHTML">
+        {% include "_partials/status_passada.html" %}
+      </div>
+    </div>
+
+    <div class="card card-interativo reveal" data-d="2">
+      <h2 class="card-title">APIs do mês</h2>
+      <div class="card-body">
+        <p class="small muted mb-8">Claude (Anthropic)</p>
+        <p>
+          <strong>USD:</strong>
+          {% if billing.claude and billing.claude.custo_usd is defined %}
+            ${{ "%.2f"|format(billing.claude.custo_usd) }}
+          {% else %}
+            —
+          {% endif %}
+        </p>
+        <p class="small">
+          Chamadas: {{ billing.claude.n_calls|default(0) }}
+          · Tokens in: {{ billing.claude.input_tokens|default(0) }}
+          · out: {{ billing.claude.output_tokens|default(0) }}
+        </p>
+
+        <div class="divider"></div>
+
+        <p class="small muted mb-8">DirectData</p>
+        <p>
+          <strong>BRL:</strong>
+          {% if billing.directdata and billing.directdata.custo_brl is defined %}
+            R$ {{ "%.2f"|format(billing.directdata.custo_brl) }}
+          {% else %}
+            —
+          {% endif %}
+        </p>
+        <p class="small">
+          Chamadas: {{ billing.directdata.n_calls|default(0) }}
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <div class="card reveal" data-d="3">
+    <h2 class="card-title">Controle</h2>
+    <p class="muted small mb-8">
+      Polling interno = loop dentro da web (igual o Tkinter "Iniciar polling").
+      Coexiste com o Task Scheduler do Windows — idempotência protege duplicata.
+      Status atual:
+      {% if polling.rodando %}
+        <span class="badge badge-ok">Rodando</span>
+        — {{ polling.n_passadas }} passada(s) desde {{ polling.iniciado_em|default('—') }}
+      {% else %}
+        <span class="badge badge-falha">Parado</span>
+      {% endif %}
+    </p>
+    <div class="btn-row">
+      {% if not polling.rodando %}
+        <form method="POST" action="{{ url_for('controle_polling_iniciar') }}"
+              style="display:inline">
+          <button type="submit" class="btn btn-primary btn-sm">Iniciar polling</button>
+        </form>
+      {% else %}
+        <form method="POST" action="{{ url_for('controle_polling_parar') }}"
+              style="display:inline"
+              onsubmit="return confirm('Parar o polling? A passada atual termina antes de encerrar.');">
+          <button type="submit" class="btn btn-secondary btn-sm">Parar polling</button>
+        </form>
+      {% endif %}
+
+      <form method="POST" action="{{ url_for('atualizar_agora') }}"
+            hx-post="{{ url_for('atualizar_agora') }}"
+            hx-target="#status-passada-box" hx-swap="innerHTML"
+            style="display:inline">
+        <button type="submit" class="btn btn-secondary btn-sm"
+                hx-disabled-elt="this" hx-indicator="#atualizar-spinner2">Rodar 1 passada</button>
+        <span id="atualizar-spinner2" class="htmx-indicator"><span class="spinner"></span></span>
+      </form>
+
+      <a href="{{ url_for('importar_form') }}" class="btn btn-secondary btn-sm">Importar arquivos</a>
+
+      <form method="POST" action="{{ url_for('maintenance_backup') }}"
+            style="display:inline"
+            onsubmit="return confirm('Fazer backup de admissoes.xlsx + payloads/ + billing.ndjson agora?');">
+        <button type="submit" class="btn btn-ghost btn-sm">Backup agora</button>
+      </form>
+
+      <button type="button" class="btn btn-ghost btn-sm"
+              onclick="window.location.reload()">Atualizar tabelas</button>
+    </div>
+  </div>
+
+  {# v2.16.9: Configurações + Manutenção mudaram pra página própria
+     (/configuracoes), também no menu lateral. Mantém atalho daqui. #}
+  <div class="card reveal" data-d="4" style="display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap;">
+    <div>
+      <h2 class="card-title" style="margin-bottom:4px;">Configurações & Manutenção</h2>
+      <p class="muted small mb-0">
+        Ajustes do pipeline (auto-email, flags de envio, polling) e ações
+        manuais (limpar fingerprint, atualizar cache, recarregar CBO) ficam
+        em página própria.
+      </p>
+    </div>
+    <a href="{{ url_for('configuracoes_pagina') }}" class="btn btn-secondary">Abrir configurações →</a>
+  </div>
+
+  <div class="card">
+    <a href="{{ url_for('pendentes') }}" class="btn btn-secondary btn-sm" style="float:right">Ver todas →</a>
+    <h2 class="card-title">Pendentes recentes</h2>
+    {% if pendentes %}
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Data</th>
+            <th>Nome</th>
+            <th>Empresa</th>
+            <th>Procedência</th>
+            <th class="col-acao"></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for e in pendentes %}
+            <tr class="{% if e.velha %}velha{% endif %}">
+              <td class="nowrap small">{{ e.ts|default("—") }}</td>
+              <td><strong>{{ e.nome }}</strong></td>
+              <td>{{ e.empresa|default("—") }}</td>
+              <td>
+                <span class="truncate small" title="{{ e.procedencia }}">
+                  {{ e.procedencia|default("—") }}
+                </span>
+              </td>
+              <td class="col-acao">
+                <a class="btn btn-primary btn-sm"
+                   href="{{ url_for('pendencia_detalhe', msg_id=e.msg_id, nome=e.nome, cnpj=e.cnpj|cnpj_url) }}">
+                  Resolver →
+                </a>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="muted mb-0">Nenhuma pendência no momento.</p>
+    {% endif %}
+  </div>
+
+{% endblock %}

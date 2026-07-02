@@ -1,0 +1,164 @@
+{% extends "base.html" %}
+
+{% block nav %}respostas{% endblock %}
+{% block titulo %}Respostas ao cliente ({{ n_pendentes }}){% endblock %}
+{% block eyebrow %}<span class="eyebrow">Revisão · Antes de enviar pro cliente</span>{% endblock %}
+
+{% block conteudo %}
+  <p class="lead reveal" style="margin-bottom: 18px;">
+    Aqui ficam os rascunhos de email que o pipeline gerou quando uma admissão
+    virou pendência. Você revisa, edita se quiser, e aprova — o sistema só
+    manda pro cliente depois que você clicar.
+  </p>
+
+  {% if n_pendentes == 0 %}
+    <div class="card reveal">
+      <p class="muted mb-0">
+        <strong>Nenhum rascunho pendente.</strong> Quando o modo
+        <code>auto_email_pendencias_modo = rascunho</code> está ativo
+        em Configurações e uma admissão vira pendência cliente, o rascunho
+        do email aparece aqui pra você revisar antes de enviar.
+      </p>
+    </div>
+  {% else %}
+    {% for r in pendentes %}
+      <div class="card card-interativo reveal" data-d="{{ loop.index0 % 4 + 1 }}">
+        <div style="display:flex; justify-content:space-between; gap:16px; flex-wrap:wrap; align-items:flex-start;">
+          <div style="flex:1; min-width:280px;">
+            <h2 class="card-title" style="margin-bottom:4px;">
+              {{ r.contexto.razao_social or '(empresa não identificada)' }}
+            </h2>
+            <p class="muted small mb-8">
+              Pra <strong>{{ r.remetente_nome or r.remetente_email }}</strong>
+              · {{ r.ts_criado|replace('T', ' ') }}
+            </p>
+
+            {% if r.contexto.nomes_sucesso %}
+              <p class="small mb-4">
+                <span class="badge badge-ok">✓ {{ r.contexto.n_sucessos }}</span>
+                {{ r.contexto.nomes_sucesso|join(', ') }}
+              </p>
+            {% endif %}
+            {% if r.contexto.nomes_pendente %}
+              <p class="small mb-4">
+                <span class="badge badge-cliente">pendentes</span>
+                {{ r.contexto.nomes_pendente|join(', ') }}
+              </p>
+            {% endif %}
+
+            <details style="margin-top:10px;">
+              <summary class="small muted" style="cursor:pointer;">
+                Ver preview do email (primeiros 280 chars)
+              </summary>
+              <p class="small mt-8" style="white-space:pre-wrap; background:rgba(0,0,0,.03); padding:10px; border-radius:6px; border:1px solid var(--border-card);">{{ (r.corpo_editado or r.corpo_proposto)[:280] }}{% if (r.corpo_editado or r.corpo_proposto)|length > 280 %}…{% endif %}</p>
+            </details>
+          </div>
+
+          <div style="display:flex; flex-direction:column; gap:8px;">
+            <a class="btn btn-primary" href="{{ url_for('respostas_detalhe', rid=r.id) }}">
+              Revisar →
+            </a>
+            <form method="POST" action="{{ url_for('respostas_descartar', rid=r.id) }}"
+                  onsubmit="return confirm('Descartar este rascunho? O cliente NÃO vai receber nada — admissão fica em pendente normal.');">
+              <button type="submit" class="btn btn-ghost btn-sm" style="width:100%;">
+                Descartar
+              </button>
+            </form>
+          </div>
+        </div>
+      </div>
+    {% endfor %}
+  {% endif %}
+
+  {% if arquivados %}
+    <details class="dia-group" style="margin-top:32px;">
+      <summary>Histórico ({{ arquivados|length }} arquivados)</summary>
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Quando</th>
+            <th>Remetente</th>
+            <th>Status</th>
+            <th>Operador</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in arquivados %}
+            <tr>
+              <td class="nowrap small">{{ (r.ts_acao or r.ts_criado)|replace('T', ' ') }}</td>
+              <td>{{ r.remetente_email }}</td>
+              <td>
+                {% if r.status == 'enviado' %}
+                  <span class="badge badge-ok">enviado</span>
+                {% else %}
+                  <span class="badge badge-falha">descartado</span>
+                {% endif %}
+              </td>
+              <td class="small muted">{{ r.operador or '—' }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </details>
+  {% endif %}
+
+  {# v2.16.32: histórico de TODO email enviado (audit obrigatório) #}
+  {% if enviados_audit %}
+    <div class="card card-acao-necessaria reveal" style="margin-top:32px;">
+      <h2 class="card-title">Histórico de envios — auditoria completa</h2>
+      <p class="small muted mb-12">
+        TODO email que sai do sistema é registrado aqui (manual ou automático).
+        <strong>Últimas 24h: {{ n_enviados_24h }} envio(s).</strong>
+        Se aparecer algum que você NÃO autorizou, é incidente — investigue.
+      </p>
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Quando</th>
+            <th>Pra</th>
+            <th>Assunto</th>
+            <th>Origem</th>
+            <th>Status</th>
+            <th>Ver</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for e in enviados_audit %}
+            <tr>
+              <td class="nowrap small">{{ e.ts|replace('T', ' ') }}</td>
+              <td class="small">
+                {{ e.para.nome or e.para.email }}<br>
+                <code class="muted" style="font-size:10.5px;">{{ e.para.email }}</code>
+              </td>
+              <td class="small truncate" style="max-width:280px;" title="{{ e.assunto }}">
+                {{ e.assunto[:60] }}
+              </td>
+              <td>
+                {% if 'pipeline_direto' in e.origem %}
+                  <span class="badge badge-falha" title="Enviado AUTOMÁTICO pelo pipeline sem revisão manual">🤖 automático</span>
+                {% elif e.origem == 'web_aprovado' %}
+                  <span class="badge badge-ok">✓ aprovado manualmente</span>
+                {% else %}
+                  <span class="badge">{{ e.origem }}</span>
+                {% endif %}
+              </td>
+              <td>
+                {% if e.sucesso %}
+                  <span class="badge badge-ok">enviado</span>
+                {% else %}
+                  <span class="badge badge-falha" title="{{ e.erro }}">FALHOU</span>
+                {% endif %}
+              </td>
+              <td>
+                <details>
+                  <summary class="btn btn-ghost btn-xs">corpo</summary>
+                  <pre style="white-space:pre-wrap; background:rgba(0,0,0,.04); padding:8px; margin-top:8px; border-radius:6px; font-size:11px; max-width:600px;">{{ e.corpo }}</pre>
+                </details>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% endif %}
+{% endblock %}

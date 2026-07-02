@@ -1,0 +1,307 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AdmitER · {% block titulo %}Dashboard{% endblock %}</title>
+  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='admiter-logo.svg') }}">
+  <link rel="alternate icon" type="image/png" href="{{ url_for('static', filename='admiter-logo.png') }}">
+  <link rel="apple-touch-icon" href="{{ url_for('static', filename='admiter-logo.svg') }}">
+  <!-- v2.16.8: Fraunces (serif display) + Hanken Grotesk (sans body) — preload pra sumir o flash -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400&family=Hanken+Grotesk:wght@400;500;600;700&display=swap">
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+  <script src="{{ url_for('static', filename='htmx.min.js') }}" defer></script>
+  <script>
+    // Sinaliza JS pra CSS: classes .reveal só ficam ocultas se JS estiver ativo.
+    document.documentElement.classList.add("js");
+    // Aplica tema escuro ANTES do CSS carregar — evita "flash" claro.
+    // Preferência salva em localStorage; default é tema claro.
+    (function(){
+      try {
+        var t = localStorage.getItem("admiter_tema");
+        if (t === "dark") document.documentElement.classList.add("dark");
+      } catch (e) {}
+    })();
+  </script>
+</head>
+<body>
+  <a class="skip-link" href="#conteudo-principal">Pular para o conteúdo</a>
+  <button class="burger" id="burger" aria-label="Abrir menu" aria-expanded="false">
+    <span aria-hidden="true"></span>
+  </button>
+  <div class="sidebar-backdrop" id="sidebar-backdrop" aria-hidden="true"></div>
+
+  <div class="app-layout">
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-brand">
+        <img src="{{ url_for('static', filename='admiter-logo.svg') }}"
+             alt="AdmitER" class="brand-logo">
+        <div class="brand-title">AdmitER</div>
+        <div class="brand-tagline">Pipeline de Admissão</div>
+      </div>
+      <nav class="sidebar-nav" aria-label="Navegação principal">
+        {% set nav = self.nav()|trim %}
+        <div class="sidebar-section">Trabalho</div>
+        <a href="{{ url_for('index') }}" class="{% if nav == 'dashboard' %}active{% endif %}">Dashboard</a>
+        <a href="{{ url_for('pendentes') }}" class="{% if nav == 'pendentes' %}active{% endif %}">Pendentes {% if contadores_sidebar.total_pendentes %}<span class="nav-badge">{{ contadores_sidebar.total_pendentes }}</span>{% endif %}</a>
+        <a href="{{ url_for('processadas') }}" class="{% if nav == 'processadas' %}active{% endif %}">Processadas</a>
+        <div class="sidebar-section">Sistema</div>
+        <a href="{{ url_for('atividade') }}" class="{% if nav == 'atividade' %}active{% endif %}">Atividade</a>
+        <a href="{{ url_for('auditoria') }}" class="{% if nav == 'auditoria' %}active{% endif %}">Auditoria</a>
+        <a href="{{ url_for('estatisticas') }}" class="{% if nav == 'estatisticas' %}active{% endif %}">Estatísticas</a>
+        <div class="sidebar-section">Configurar</div>
+        <a href="{{ url_for('respostas_listar') }}" class="{% if nav == 'respostas' %}active{% endif %}">Respostas {% if contadores_sidebar.rascunhos_pendentes %}<span class="nav-badge">{{ contadores_sidebar.rascunhos_pendentes }}</span>{% endif %}</a>
+        <a href="{{ url_for('configuracoes_pagina') }}" class="{% if nav == 'configuracoes' %}active{% endif %}">Configurações</a>
+        <a href="{{ url_for('perfis_listar') }}" class="{% if nav == 'perfis' %}active{% endif %}">Perfis</a>
+        <a href="{{ url_for('importar_form') }}" class="{% if nav == 'importar' %}active{% endif %}">Importar</a>
+      </nav>
+      <div class="sidebar-acesso">
+        <div class="acesso-titulo">Acesso pela rede</div>
+        {% for ip in ips_acesso %}
+          <div class="acesso-ip">
+            <code class="acesso-ip-valor"
+                  title="Clique pra copiar"
+                  onclick="(function(el){
+                    var t = el.textContent.trim();
+                    if (navigator.clipboard) navigator.clipboard.writeText(t).then(function(){
+                      el.classList.add('acesso-ip-copiado');
+                      setTimeout(function(){ el.classList.remove('acesso-ip-copiado'); }, 1200);
+                    });
+                  })(this)">http://{{ ip }}:{{ porta_acesso }}</code>
+          </div>
+        {% else %}
+          <div class="acesso-ip">
+            <code class="acesso-ip-valor">localhost:{{ porta_acesso }}</code>
+          </div>
+        {% endfor %}
+        <div class="acesso-dica">clique no IP pra copiar</div>
+      </div>
+      <div class="sidebar-footer">
+        <span class="sidebar-footer-tag">Sob a mesma noite digital.</span>
+        <span>v{{ APP_VERSION }} · CrosaraTech</span>
+      </div>
+    </aside>
+
+    <main class="main" id="conteudo-principal" tabindex="-1">
+      <div id="global-status" hx-get="{{ url_for('htmx_status_passada') }}" hx-trigger="load, every 10s" hx-swap="innerHTML" hx-target="this"></div>
+      <header class="main-header reveal">
+        <div class="main-header-titulo">
+          {% block eyebrow %}<span class="eyebrow">{{ self.nav()|trim|upper }}</span>{% endblock %}
+          <h1>{% block titulo_visivel %}{{ self.titulo() }}{% endblock %}</h1>
+        </div>
+        <div class="header-actions">
+          {% block header_actions %}{% endblock %}
+          <button type="button" id="theme-toggle" class="theme-toggle"
+                  title="Alternar tema (claro/escuro)"
+                  aria-label="Alternar tema">
+            <span class="theme-toggle-label">Tema escuro</span>
+          </button>
+        </div>
+      </header>
+
+      {% block conteudo %}{% endblock %}
+    </main>
+  </div>
+
+  <div id="toast-holder">
+    {% include "_partials/flash_holder.html" ignore missing %}
+  </div>
+
+  <!-- v2.16.9: Cmd+K command palette -->
+  <div class="cmdk-backdrop" id="cmdk-backdrop" role="dialog" aria-modal="true" aria-label="Paleta de comandos">
+    <div class="cmdk-panel" role="document">
+      <input type="search" class="cmdk-search" id="cmdk-search"
+             placeholder="O que você quer fazer?" autocomplete="off"
+             aria-controls="cmdk-list">
+      <div class="cmdk-list" id="cmdk-list" role="listbox">
+        <a class="cmdk-item" href="{{ url_for('index') }}" data-cmd="dashboard">Ir pra Dashboard <span class="cmdk-item-kbd">G D</span></a>
+        <a class="cmdk-item" href="{{ url_for('pendentes') }}" data-cmd="pendentes">Ver pendentes <span class="cmdk-item-kbd">G P</span></a>
+        <a class="cmdk-item" href="{{ url_for('processadas') }}" data-cmd="processadas">Ver processadas <span class="cmdk-item-kbd">G R</span></a>
+        <a class="cmdk-item" href="{{ url_for('atividade') }}" data-cmd="atividade">Atividade (logs ao vivo) <span class="cmdk-item-kbd">G A</span></a>
+        <a class="cmdk-item" href="{{ url_for('perfis_listar') }}" data-cmd="perfis">Perfis de remetente <span class="cmdk-item-kbd">G F</span></a>
+        <a class="cmdk-item" href="{{ url_for('estatisticas') }}" data-cmd="stats">Estatísticas</a>
+        <a class="cmdk-item" href="{{ url_for('importar_form') }}" data-cmd="importar">Importar arquivos</a>
+        <a class="cmdk-item" href="#" data-cmd="toggle-theme">Alternar tema (claro/escuro) <span class="cmdk-item-kbd">T</span></a>
+        <a class="cmdk-item" href="#" data-cmd="reload">Recarregar página <span class="cmdk-item-kbd">R</span></a>
+      </div>
+      <div class="cmdk-hint">↑↓ navegar · ⏎ abrir · Esc fechar</div>
+    </div>
+  </div>
+
+  <span style="display:none" aria-hidden="true">{% block nav %}dashboard{% endblock %}</span>
+
+  <script>
+    // Fecha flashes ao clicar
+    document.addEventListener("click", function (ev) {
+      var t = ev.target.closest(".flash");
+      if (t) t.remove();
+    });
+
+    // Remove flashes automaticamente após o fade-out (~5s)
+    document.addEventListener("animationend", function (ev) {
+      if (ev.animationName === "flash-out" && ev.target.classList.contains("flash")) {
+        ev.target.remove();
+      }
+    });
+
+    // Atalho 'r' pra recarregar a página (sem foco em input)
+    document.addEventListener("keydown", function (ev) {
+      if (ev.key !== "r" && ev.key !== "R") return;
+      if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
+      var ativo = document.activeElement;
+      if (ativo && (ativo.tagName === "INPUT" || ativo.tagName === "TEXTAREA" || ativo.tagName === "SELECT")) return;
+      if (ativo && ativo.isContentEditable) return;
+      window.location.reload();
+    });
+
+    // Toggle de tema escuro
+    (function(){
+      var btn = document.getElementById("theme-toggle");
+      var label = btn && btn.querySelector(".theme-toggle-label");
+      function aplicarLabel(){
+        if (!label) return;
+        label.textContent = document.documentElement.classList.contains("dark")
+          ? "Tema claro" : "Tema escuro";
+      }
+      aplicarLabel();
+      if (btn) btn.addEventListener("click", function(){
+        var ativo = document.documentElement.classList.toggle("dark");
+        try { localStorage.setItem("admiter_tema", ativo ? "dark" : "light"); } catch(e){}
+        aplicarLabel();
+      });
+    })();
+
+    // v2.16.9: mobile hamburger
+    (function(){
+      var burger = document.getElementById("burger");
+      var backdrop = document.getElementById("sidebar-backdrop");
+      if (!burger) return;
+      function toggle(open){
+        document.body.classList.toggle("menu-open", open);
+        burger.setAttribute("aria-expanded", open ? "true" : "false");
+        burger.setAttribute("aria-label", open ? "Fechar menu" : "Abrir menu");
+      }
+      burger.addEventListener("click", function(){
+        toggle(!document.body.classList.contains("menu-open"));
+      });
+      backdrop.addEventListener("click", function(){ toggle(false); });
+      // fecha ao clicar num link da nav
+      document.querySelector(".sidebar-nav").addEventListener("click", function(e){
+        if (e.target.tagName === "A") toggle(false);
+      });
+    })();
+
+    // v2.16.9: Cmd+K / Ctrl+K command palette
+    (function(){
+      var bd = document.getElementById("cmdk-backdrop");
+      var search = document.getElementById("cmdk-search");
+      var items = document.querySelectorAll(".cmdk-item");
+      if (!bd) return;
+      var activeIdx = 0;
+      function open(){
+        document.body.classList.add("cmdk-open");
+        search.value = "";
+        items.forEach(function(it){ it.style.display = ""; it.classList.remove("active"); });
+        activeIdx = 0;
+        items[0] && items[0].classList.add("active");
+        setTimeout(function(){ search.focus(); }, 30);
+      }
+      function close(){
+        document.body.classList.remove("cmdk-open");
+      }
+      function filter(q){
+        q = (q || "").toLowerCase().trim();
+        var visible = [];
+        items.forEach(function(it){
+          var txt = it.textContent.toLowerCase();
+          var ok = !q || txt.indexOf(q) >= 0;
+          it.style.display = ok ? "" : "none";
+          if (ok) visible.push(it);
+          it.classList.remove("active");
+        });
+        activeIdx = 0;
+        if (visible[0]) visible[0].classList.add("active");
+      }
+      function visibleItems(){
+        return Array.from(items).filter(function(it){ return it.style.display !== "none"; });
+      }
+      function move(delta){
+        var vs = visibleItems();
+        if (!vs.length) return;
+        vs[activeIdx] && vs[activeIdx].classList.remove("active");
+        activeIdx = (activeIdx + delta + vs.length) % vs.length;
+        vs[activeIdx].classList.add("active");
+        vs[activeIdx].scrollIntoView({ block: "nearest" });
+      }
+      function activate(item){
+        var cmd = item.getAttribute("data-cmd");
+        if (cmd === "toggle-theme") {
+          document.getElementById("theme-toggle").click();
+        } else if (cmd === "reload") {
+          window.location.reload();
+        } else {
+          window.location.href = item.getAttribute("href");
+        }
+        close();
+      }
+      document.addEventListener("keydown", function(e){
+        // abrir Cmd+K / Ctrl+K
+        if ((e.metaKey || e.ctrlKey) && (e.key === "k" || e.key === "K")) {
+          e.preventDefault();
+          if (document.body.classList.contains("cmdk-open")) close(); else open();
+          return;
+        }
+        if (!document.body.classList.contains("cmdk-open")) return;
+        if (e.key === "Escape") { e.preventDefault(); close(); }
+        else if (e.key === "ArrowDown") { e.preventDefault(); move(1); }
+        else if (e.key === "ArrowUp")   { e.preventDefault(); move(-1); }
+        else if (e.key === "Enter") {
+          e.preventDefault();
+          var vs = visibleItems();
+          if (vs[activeIdx]) activate(vs[activeIdx]);
+        }
+      });
+      search.addEventListener("input", function(){ filter(search.value); });
+      items.forEach(function(it){
+        it.addEventListener("click", function(e){
+          e.preventDefault();
+          activate(it);
+        });
+      });
+      bd.addEventListener("click", function(e){
+        if (e.target === bd) close();
+      });
+    })();
+
+    // v2.16.8: reveal-on-scroll sutil pros cards/seções
+    (function(){
+      var els = document.querySelectorAll(".reveal:not(.in)");
+      if (!("IntersectionObserver" in window) || !els.length) {
+        els.forEach(function(el){ el.classList.add("in"); });
+        return;
+      }
+      var io = new IntersectionObserver(function(entries){
+        entries.forEach(function(en){
+          if (en.isIntersecting) { en.target.classList.add("in"); io.unobserve(en.target); }
+        });
+      }, { threshold: 0.08, rootMargin: "0px 0px -6% 0px" });
+      els.forEach(function(el){ io.observe(el); });
+    })();
+
+    // Quando HTMX recebe HX-Redirect via header, a navegação é automática.
+    // Quando recebe um fragment de flash, garante que ele entre no toast-holder.
+    document.body.addEventListener("htmx:afterOnLoad", function (ev) {
+      var resp = ev.detail && ev.detail.xhr ? ev.detail.xhr.responseText : "";
+      if (!resp) return;
+      var tmp = document.createElement("div");
+      tmp.innerHTML = resp;
+      var flash = tmp.querySelector(".flash");
+      if (flash && ev.detail.target && !ev.detail.target.contains(flash)) {
+        document.getElementById("toast-holder").appendChild(flash);
+      }
+    });
+  </script>
+</body>
+</html>

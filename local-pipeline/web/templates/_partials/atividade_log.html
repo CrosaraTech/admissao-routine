@@ -1,0 +1,7 @@
+{%- if not eventos -%}
+  <div class="terminal-vazio">Sem eventos por enquanto. O pipeline ainda não rodou nesta sessão da web.</div>
+{%- else -%}
+{%- for ev in eventos -%}
+<div class="terminal-linha terminal-{{ ev.nivel|lower }}">{{ ev.msg }}</div>
+{%- endfor -%}
+{%- endif -%}

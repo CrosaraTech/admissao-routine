@@ -1,0 +1,122 @@
+{% extends "base.html" %}
+
+{% block nav %}estatisticas{% endblock %}
+{% block titulo %}Estatísticas{% endblock %}
+
+{% block conteudo %}
+
+  <div class="grid-3">
+    <div class="card">
+      <h2 class="card-title">Claude — Custo (mês)</h2>
+      <div class="card-body">
+        <p>
+          <strong>USD:</strong>
+          {% if billing.claude and billing.claude.custo_usd is defined %}
+            ${{ "%.2f"|format(billing.claude.custo_usd) }}
+          {% else %}
+            —
+          {% endif %}
+        </p>
+        <p>
+          <strong>BRL:</strong>
+          {% if billing.claude and billing.claude.custo_brl is defined %}
+            R$ {{ "%.2f"|format(billing.claude.custo_brl) }}
+          {% else %}
+            —
+          {% endif %}
+        </p>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2 class="card-title">Claude — Uso</h2>
+      <div class="card-body">
+        <p><strong>Chamadas:</strong> {{ billing.claude.n_calls|default(0) }}</p>
+        <p><strong>Tokens (in):</strong> {{ billing.claude.input_tokens|default(0) }}</p>
+        <p><strong>Tokens (out):</strong> {{ billing.claude.output_tokens|default(0) }}</p>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2 class="card-title">DirectData — Mês</h2>
+      <div class="card-body">
+        <p>
+          <strong>BRL:</strong>
+          {% if billing.directdata and billing.directdata.custo_brl is defined %}
+            R$ {{ "%.2f"|format(billing.directdata.custo_brl) }}
+          {% else %}
+            —
+          {% endif %}
+        </p>
+        <p><strong>Chamadas totais:</strong> {{ billing.directdata.n_calls|default(0) }}</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2 class="card-title">DirectData — Detalhes por API</h2>
+    {% set por_api = billing.directdata.por_api if (billing.directdata and billing.directdata.por_api) else {} %}
+    {% if por_api %}
+      <table class="table">
+        <thead>
+          <tr>
+            <th>API</th>
+            <th>Chamadas</th>
+            <th>Sucesso</th>
+            <th>Falhas</th>
+            <th>Taxa</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for nome, stats in por_api.items() %}
+            {% set total = (stats.n_calls or 0) %}
+            {% set sucesso = (stats.sucesso or 0) %}
+            {% set falhas = total - sucesso %}
+            {% set taxa = (sucesso / total * 100) if total else 0 %}
+            <tr>
+              <td><strong>{{ nome }}</strong></td>
+              <td>{{ total }}</td>
+              <td>{{ sucesso }}</td>
+              <td>{{ falhas }}</td>
+              <td>{{ "%.1f"|format(taxa) }}%</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="muted mb-0">Sem chamadas a DirectData neste mês.</p>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <h2 class="card-title">Resumo do pipeline</h2>
+    <div class="grid-attrs">
+      <div class="attr">
+        <span class="attr-label">Processadas</span>
+        <span class="attr-value">{{ contadores.processadas|default(0) }}</span>
+      </div>
+      <div class="attr">
+        <span class="attr-label">Pendentes (cliente)</span>
+        <span class="attr-value">{{ contadores.pendentes_cliente|default(0) }}</span>
+      </div>
+      <div class="attr">
+        <span class="attr-label">Pendentes (internas)</span>
+        <span class="attr-value">{{ contadores.pendentes_internas|default(0) }}</span>
+      </div>
+      <div class="attr">
+        <span class="attr-label">Falhas técnicas</span>
+        <span class="attr-value">{{ contadores.falhas_tecnicas|default(0) }}</span>
+      </div>
+      <div class="attr">
+        <span class="attr-label">Pendentes velhas (≥3d)</span>
+        <span class="attr-value">{{ contadores.pendentes_velhas|default(0) }}</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2 class="card-title">Última passada</h2>
+    {% include "_partials/status_passada.html" %}
+  </div>
+
+{% endblock %}

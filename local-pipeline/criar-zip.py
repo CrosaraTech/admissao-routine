@@ -54,6 +54,8 @@ EXCLUDE_FILES = {
     "admissao_log.ndjson",      # idem
     "billing.ndjson",           # contém timestamps de uso
     "econtador_audit.ndjson",   # contém CNPJs/IDs
+    "cnpj_overrides.json",      # contém msg_ids do operador
+    "funcao_overrides.json",    # idem
     ".DS_Store",
     "Thumbs.db",
     "criar-zip.py",             # não precisa no destino
@@ -117,7 +119,8 @@ def main() -> int:
     print(f"  Incluidos: {len(incluidos)} arquivos")
     importantes = ["interface.py", "main.py", "DEPLOY.md", "install.bat",
                    "AdmitER.bat", "build-exe.bat",
-                   ".env.example", "config.json", "briefing.md"]
+                   ".env.example", "config.json", "briefing.md",
+                   "unrar.exe"]
     for nome in importantes:
         marcador = "[OK]" if any(str(p) == nome for p in incluidos) else "[FALTA]"
         print(f"     {marcador} {nome}")

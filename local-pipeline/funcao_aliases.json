@@ -1,0 +1,30 @@
+{
+  "encarregado de manutencao": {
+    "funcao_id": "10807",
+    "nome_cargo": "AUXILIAR DE MANUTENÇÃO MECÂNICO",
+    "criado_em": "2026-06-09T14:48:01",
+    "observacoes": "",
+    "eh_estagio": false
+  },
+  "auxiliar industrial": {
+    "funcao_id": "2464",
+    "nome_cargo": "AUXILIAR INDUSTRIAL",
+    "criado_em": "2026-06-09T15:49:34",
+    "observacoes": "",
+    "eh_estagio": false
+  },
+  "_estagio_auxiliar de loja": {
+    "funcao_id": "8860",
+    "nome_cargo": "ESTAGIO EM SUPERMERCADO",
+    "criado_em": "2026-06-11T15:26:27",
+    "observacoes": "",
+    "eh_estagio": true
+  },
+  "_estagio_estagiario atendimento supermercado": {
+    "funcao_id": "8860",
+    "nome_cargo": "ESTAGIO EM SUPERMERCADO",
+    "criado_em": "2026-06-11T17:35:10",
+    "observacoes": "",
+    "eh_estagio": true
+  }
+}

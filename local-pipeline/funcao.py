@@ -1,26 +1,28 @@
 """Resolução de função via planilha CBO.
 
 Planilha esperada (funcoes_cbo.xlsx) com colunas:
-  - usar         (opcional; "X" pra marcar cargos que o escritório usa)
+  - usar         (obrigatório; "X" pra marcar cargos que o escritório usa)
   - nome_cargo   (string — nome do cargo cadastrado no eContador)
   - cbo          (string ou int — código CBO de 6 dígitos)
   - funcao_id    (string ou int — id da função no eContador)
+  - codigo       (string — código interno usado pra resolução manual via UI)
 
-Estratégia:
-  1. Calcula score semântico (CBO exato + fuzzy por nome) pra TODA a planilha
-  2. Se algum cargo marcado com X tem score >= alto → usa
-  3. Se algum X tem score >= ambíguo → repassa lista X pro Claude desempatar
-  4. Fallback: aplica mesma lógica em toda a planilha (sem filtrar por X)
-
-Isso permite o escritório curar uma whitelist de cargos "oficiais" sem perder
-a capacidade de matchear contra os 9k+ cargos do eContador quando preciso.
+Estratégia (regra do escritório — confirmada 28/05/2026):
+  - SÓ procura match nos cargos marcados com X na coluna `usar`.
+  - Se não achar match alto entre os X-marcados → pendência interna.
+    Operador resolve manualmente via "Resolver pendência" → campo Função.
+  - NÃO faz fallback automático pra planilha completa (9k+ cargos genéricos
+    do eContador). Isso evita matches enganosos como "OPERADOR DE AGLUTINADOR"
+    → "OPERADOR(A) DE CAIXA" só porque ambos começam com "OPERADOR".
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import unicodedata
+from datetime import datetime
 from difflib import SequenceMatcher
 from pathlib import Path
 
@@ -45,7 +47,7 @@ def _cbo_digitos(s: str | int | None) -> str:
 
 
 def carregar_planilha(path: Path) -> list[dict]:
-    """Lê funcoes_cbo.xlsx e retorna lista de {nome_cargo, cbo, funcao_id}."""
+    """Lê funcoes_cbo.xlsx e retorna lista de {nome_cargo, cbo, funcao_id, usar, codigo}."""
     if not path.exists():
         raise FileNotFoundError(
             f"Planilha CBO não encontrada em {path}. "
@@ -71,6 +73,7 @@ def carregar_planilha(path: Path) -> list[dict]:
     i_cbo = col_idx("cbo")
     i_id = col_idx("funcao_id", "id", "funcaoid")
     i_usar = col_idx("usar")  # opcional
+    i_codigo = col_idx("codigo")  # opcional — usado pelo dialog Resolver Pendência
 
     if min(i_nome, i_cbo, i_id) < 0:
         raise ValueError(
@@ -90,7 +93,13 @@ def carregar_planilha(path: Path) -> list[dict]:
         usar = False
         if i_usar >= 0:
             usar = str(row[i_usar] or "").strip().upper() == "X"
-        items.append({"nome_cargo": nome, "cbo": cbo, "funcao_id": fid, "usar": usar})
+        items.append({
+            "nome_cargo": nome,
+            "cbo": cbo,
+            "funcao_id": fid,
+            "usar": usar,
+            "codigo": str(row[i_codigo] or "").strip() if i_codigo >= 0 else "",
+        })
     return items
 
 
@@ -179,18 +188,23 @@ def resolver_funcao(
     planilha: list[dict],
     cargo_extraido: str | None,
     cbo_extraido: str | int | None = None,
+    eh_estagio: bool = False,
 ) -> tuple[str | None, float, list[dict], str]:
-    """Tenta resolver a função.
+    """Tenta resolver a função SOMENTE entre cargos marcados com X.
 
-    Estratégia em 2 passos:
-      1. Tenta resolver SÓ entre os cargos marcados com X na coluna `usar`
-         (whitelist curada do escritório).
-      2. Se nenhum cargo X bate, faz fallback pra toda a planilha.
+    Mudança 28/05/2026: removido fallback automático pra planilha completa.
+    Se não bater nos X-marcados, vira pendência e o operador resolve pela UI.
+
+    v2.11.0 — estagiário:
+      Quando `eh_estagio=True`, busca SÓ em alias de estágio. Se não tiver
+      alias salvo, vira pendência interna IMEDIATAMENTE com motivo claro —
+      não tenta resolver via X-marcados (CLT) pra evitar pegar função errada
+      (cliente sempre tem função separada de estágio na planilha CBO).
 
     Retorna (funcao_id, confianca, candidatos_ambiguos, motivo).
-      - funcao_id != None e candidatos_ambiguos vazio → resolveu sozinho
-      - funcao_id None e candidatos_ambiguos não-vazio → ambíguo, repassar pro Claude
-      - funcao_id None e candidatos_ambiguos vazio → não encontrou nada
+      - funcao_id != None → resolveu (match alto entre X-marcados ou alias)
+      - funcao_id None com ambíguos → operador escolhe manualmente
+      - funcao_id None sem ambíguos → operador adiciona à planilha ou marca X
     """
     if not planilha:
         return None, 0.0, [], "Planilha CBO vazia"
@@ -201,18 +215,174 @@ def resolver_funcao(
     if not cargo_norm and not cbo:
         return None, 0.0, [], "Cargo e CBO não informados"
 
+    # Step 0: alias global — operador já mapeou esse cargo antes.
+    # Pra estágio, busca SÓ na fatia de estágio (sem fallback CLT).
+    alias = consultar_funcao_alias(cargo_extraido or "", eh_estagio=eh_estagio)
+    if alias:
+        tipo = "ESTÁGIO" if eh_estagio else "CLT"
+        log.info(
+            f"[alias ✓ {tipo}] '{cargo_extraido}' → {alias['nome_cargo']} "
+            f"(id={alias['funcao_id']})"
+        )
+        return alias["funcao_id"], 1.0, [], f"ok (alias {tipo.lower()})"
+
+    # Pra estágio sem alias: pendência IMEDIATA (não tenta resolver via CLT).
+    if eh_estagio:
+        return None, 0.0, [], (
+            f"Estágio detectado para cargo '{cargo_extraido}', mas não há alias "
+            f"de estágio salvo. Cliente costuma cadastrar função separada "
+            f"(ex: 'ESTAGIÁRIO DE LOJA') no eContador. Defina o código manualmente "
+            f"e marque 'Salvar como alias permanente' pra próximos estagiários "
+            f"do mesmo cargo."
+        )
+
     marcados = [f for f in planilha if f.get("usar")]
+    if not marcados:
+        return None, 0.0, [], (
+            "Nenhum cargo marcado com X na planilha CBO. "
+            "Marque os cargos do escritório com X pra habilitar resolução automática."
+        )
 
-    # Passo 1: tenta só nos marcados com X
-    if marcados:
-        log.info(f"🔎 Tentando match em {len(marcados)} cargo(s) marcado(s) com X")
-        fid, conf, amb, msg = _resolver_em(marcados, cargo_norm, cbo, "X-marcado")
-        if fid is not None:
-            return fid, conf, [], "ok"
-        if amb:
-            # Ambíguo entre X — repassa pro Claude desempatar SÓ entre os X
-            return None, conf, amb, msg
-        log.info(f"   Sem match entre X-marcados — fallback pra planilha completa")
+    log.info(f"🔎 Procurando match em {len(marcados)} cargo(s) marcado(s) com X")
+    fid, conf, amb, msg = _resolver_em(marcados, cargo_norm, cbo, "X-marcado")
+    if fid is not None:
+        return fid, conf, [], "ok"
 
-    # Passo 2: fallback pra planilha inteira
-    return _resolver_em(planilha, cargo_norm, cbo, "planilha completa")
+    # Sem match alto nos X-marcados — vira pendência. NÃO tenta planilha
+    # completa (evita matches enganosos tipo "OPERADOR DE AGLUTINADOR" →
+    # "OPERADOR DE CAIXA"). Operador resolve via UI digitando o código.
+    return None, conf, amb, msg
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Aliases GLOBAIS de cargo
+#
+# Diferente de funcao_overrides.json (que é por msg_id + nome_funcionario),
+# aliases valem pra TODAS as futuras admissões com o mesmo cargo normalizado.
+# Caso de uso: cliente sempre manda "AUXILIAR DE SERVIÇOS GERAIS" e o
+# escritório quer mapear pro cargo "AUXILIAR DE LIMPEZA" — operador define
+# UMA VEZ e nunca mais vira pendência.
+#
+# Formato do JSON:
+# {
+#   "auxiliar de servicos gerais": {
+#     "funcao_id": "12345",
+#     "nome_cargo": "AUXILIAR DE LIMPEZA",
+#     "criado_em": "2026-06-01T14:30:00",
+#     "observacoes": "Cliente X manda sempre assim"
+#   },
+#   ...
+# }
+# ─────────────────────────────────────────────────────────────────────────────
+
+FUNCAO_ALIASES_FILE = Path(__file__).parent / "funcao_aliases.json"
+
+# Prefixo na chave do alias quando é estágio (v2.11.0).
+# Mantém compatibilidade com aliases CLT existentes — chaves antigas
+# (sem prefixo) continuam valendo. Estágios novos viram chave dedicada
+# tipo "_estagio_auxiliar de loja" → funcao_id da função "ESTAGIÁRIO DE LOJA".
+PREFIXO_ESTAGIO = "_estagio_"
+
+
+def _chave_alias(cargo: str, eh_estagio: bool = False) -> str:
+    """Normaliza cargo + aplica prefixo de estágio se for o caso."""
+    base = _norm(cargo or "")
+    if not base:
+        return ""
+    return f"{PREFIXO_ESTAGIO}{base}" if eh_estagio else base
+
+
+def carregar_funcao_aliases() -> dict:
+    """Lê {cargo_normalizado: {funcao_id, nome_cargo, criado_em, observacoes}}.
+
+    Estágios usam chaves com prefixo `_estagio_` no mesmo arquivo —
+    operador vê tudo num lugar só, sem split de arquivo.
+
+    Retorna {} se arquivo não existir ou estiver corrompido.
+    """
+    if not FUNCAO_ALIASES_FILE.exists():
+        return {}
+    try:
+        with FUNCAO_ALIASES_FILE.open("r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except (json.JSONDecodeError, OSError) as e:
+        log.warning(f"Falha lendo {FUNCAO_ALIASES_FILE}: {e}")
+        return {}
+
+
+def salvar_funcao_alias(
+    cargo: str,
+    funcao_id: str,
+    nome_cargo: str,
+    observacoes: str = "",
+    eh_estagio: bool = False,
+) -> None:
+    """Salva (ou atualiza) um alias global de cargo.
+
+    Args:
+        eh_estagio: quando True, salva com prefixo `_estagio_` na chave.
+            Estágios não compartilham alias com CLT — função pra "AUXILIAR
+            DE LOJA" CLT é uma; pra "AUXILIAR DE LOJA" estagiário é outra
+            (cliente costuma criar `ESTAGIÁRIO DE LOJA` na CBO).
+
+    SANITY CHECK (v2.11.1):
+        Se `nome_cargo` contém "ESTAGIO"/"ESTAGIARIO"/"ESTAGIARIA"
+        (sem acento), FORÇA `eh_estagio=True` mesmo se foi chamado com
+        False. Defesa em profundidade contra o bug do caso YURI (11/06/2026):
+        operador digitou função 8860 "ESTAGIO EM SUPERMERCADO" mas a UI
+        salvou como CLT porque a pendência veio de versão anterior à 2.11.0
+        (sem a flag `eh_estagio` no resolucao). Risco real: próximo CLT
+        com cargo "auxiliar de loja" mapearia pra função de estagiário.
+    """
+    # Sanity check pelo NOME DA FUNÇÃO que o operador digitou no eContador.
+    # Se o nome contém marcador de estágio, é estágio — independente do que
+    # o caller passou. Mais forte que confiar em flag persistida.
+    nome_norm = _norm(nome_cargo or "")
+    contem_marcador_estagio = bool(
+        re.search(r"\bestagi[ao]\b|\bestagi[ao]ri[oa]\b", nome_norm)
+    )
+    if contem_marcador_estagio and not eh_estagio:
+        log.warning(
+            f"   ⚠ SANITY CHECK: nome_cargo '{nome_cargo}' contém marcador de "
+            f"estágio mas chamada veio com eh_estagio=False — FORÇANDO True. "
+            f"Provável bug do caller. Defesa em profundidade ativada."
+        )
+        eh_estagio = True
+
+    chave = _chave_alias(cargo, eh_estagio)
+    if not chave:
+        raise ValueError("Cargo vazio — não dá pra salvar alias")
+    if not str(funcao_id).strip():
+        raise ValueError("funcao_id vazio — não dá pra salvar alias")
+
+    aliases = carregar_funcao_aliases()
+    aliases[chave] = {
+        "funcao_id": str(funcao_id).strip(),
+        "nome_cargo": nome_cargo.strip(),
+        "criado_em": datetime.now().isoformat(timespec="seconds"),
+        "observacoes": observacoes.strip(),
+        "eh_estagio": bool(eh_estagio),
+    }
+    with FUNCAO_ALIASES_FILE.open("w", encoding="utf-8") as fh:
+        json.dump(aliases, fh, ensure_ascii=False, indent=2)
+    tipo = "ESTÁGIO" if eh_estagio else "CLT"
+    log.info(
+        f"[alias salvo {tipo}] '{cargo}' → {nome_cargo} (id={funcao_id}) "
+        f"em {FUNCAO_ALIASES_FILE.name}"
+    )
+
+
+def consultar_funcao_alias(cargo: str, eh_estagio: bool = False) -> dict | None:
+    """Procura alias global pra um cargo. Retorna entry ou None.
+
+    Args:
+        eh_estagio: quando True, busca SÓ na fatia de estágio (chave com
+            prefixo `_estagio_`). NÃO faz fallback pra CLT — função CLT
+            normal é INCORRETA pra estagiário (cargo diferente no eContador).
+    """
+    chave = _chave_alias(cargo, eh_estagio)
+    if not chave:
+        return None
+    aliases = carregar_funcao_aliases()
+    return aliases.get(chave)

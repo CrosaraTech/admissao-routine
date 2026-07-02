@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+
+{% block nav %}configuracoes{% endblock %}
+{% block titulo %}Configurações{% endblock %}
+{% block eyebrow %}<span class="eyebrow">Pipeline · Como o sistema decide</span>{% endblock %}
+
+{% block conteudo %}
+  <p class="lead reveal" style="margin-bottom: 24px;">
+    Ajuste o comportamento do pipeline e dispare manutenção sem precisar editar
+    arquivos no servidor. Tudo aqui salva sozinho ao mudar.
+  </p>
+  {% include "_partials/configuracoes_corpo.html" %}
+{% endblock %}

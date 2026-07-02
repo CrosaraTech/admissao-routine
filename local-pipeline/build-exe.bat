@@ -40,6 +40,16 @@ if errorlevel 1 (
     exit /b 1
 )
 
+REM Inclui unrar.exe se existir (opcional — pra descompactar .rar)
+set UNRAR_OPT=
+if exist "unrar.exe" (
+    echo Incluindo unrar.exe no build (suporte a .rar)
+    set UNRAR_OPT=--add-data "unrar.exe;."
+) else (
+    echo [AVISO] unrar.exe nao encontrado — .rar nao sera suportado
+    echo         Baixe em https://www.rarlab.com/rar_add.htm e coloque na pasta
+)
+
 echo.
 echo Buildando AdmitER.exe (pode levar 1-2 min)...
 ".venv\Scripts\python.exe" -m PyInstaller ^
@@ -56,6 +66,7 @@ echo Buildando AdmitER.exe (pode levar 1-2 min)...
     --add-data "admitir-logo.png;." ^
     --add-data "admitir-logo.ico;." ^
     --add-data "Logotipo Crosara - CMYK-04.jpg;." ^
+    %UNRAR_OPT% ^
     interface.py
 
 if errorlevel 1 (

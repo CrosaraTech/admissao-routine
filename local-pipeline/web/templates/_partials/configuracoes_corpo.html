@@ -1,0 +1,171 @@
+{# v2.16.9: bloco reusado em /configuracoes e (legacy) no dashboard.
+   Comportamento idêntico — só muda o template hospedeiro. #}
+
+<div class="card reveal" data-d="1">
+  <h2 class="card-title">Configurações</h2>
+  <p class="muted small mb-8">
+    Mudou alguma coisa? Não precisa clicar em nada — salva sozinho na hora.
+    A próxima passada já usa os novos valores. <strong>Quando aparecer
+    "Salvo" verde do lado, é porque foi gravado.</strong>
+  </p>
+
+  {# v2.16.19: auto_email_pendencias virou um RADIO com 3 modos.
+     A linha "Enviar email…" foi removida do for loop dos booleanos. #}
+  <div class="form-group cfg-row">
+    <label style="display:block; margin-bottom:8px;">
+      <strong>Resposta automática ao cliente</strong>
+      <small class="muted" style="display:block; margin-top:4px;">
+        Quando uma admissão vira pendente cliente, o sistema gera um email
+        explicando o que falta. Escolha como tratar:
+      </small>
+    </label>
+    {% set modo_atual = config_atual.auto_email_pendencias_modo or ('rascunho' if config_atual.auto_email_pendencias else 'desligado') %}
+    <div style="display:flex; flex-direction:column; gap:8px; margin-left:4px;">
+      {% for valor, label, desc in [
+        ('desligado', 'Desligado', 'Não responde nada — DP responde manualmente. Sistema só registra a pendência.'),
+        ('rascunho',  'Rascunho com revisão (recomendado)', 'Gera o texto, manda pra fila /respostas. Analista revisa, edita, aprova → só então envia.'),
+        ('direto',    'Envio direto sem revisão (arriscado)', 'Envia automático sem revisão humana. Use só com remetentes muito confiáveis.'),
+      ] %}
+      <label style="display:flex; align-items:flex-start; gap:8px; padding:8px 10px; border:1px solid var(--border-card); border-radius:8px; cursor:pointer; {% if modo_atual == valor %}border-color:var(--orange); background:rgba(217,92,50,.04);{% endif %}">
+        <input type="radio" name="auto_email_pendencias_modo" value="{{ valor }}"
+               {% if modo_atual == valor %}checked{% endif %}
+               hx-post="{{ url_for('configuracoes_salvar') }}?campo=auto_email_pendencias_modo"
+               hx-trigger="change"
+               hx-include="this"
+               hx-target="#cfg-status-auto_email_pendencias_modo"
+               hx-swap="outerHTML"
+               style="margin-top:3px;">
+        <div>
+          <strong style="font-size:13px;">{{ label }}</strong>
+          <div class="small muted">{{ desc }}</div>
+        </div>
+      </label>
+      {% endfor %}
+    </div>
+    <span id="cfg-status-auto_email_pendencias_modo" class="cfg-status-slot"></span>
+  </div>
+
+  {% set bools = [
+    ("sempre_mandar_sem_data_admissao",
+     "Mandar admissão SEM data quando o Claude não identificar",
+     "Se o Claude conseguir extrair a data (do email ou do ASO), manda normal. Se não conseguir, envia vazio em vez de virar pendência — DP digita no Alterdata Desktop."),
+    ("sempre_mandar_sem_funcao",
+     "Mandar admissão SEM função quando o cargo não bater na planilha CBO",
+     "Tenta resolver a função primeiro. Se o cargo bate na planilha, manda normal. Se não bate, envia placeholder em vez de virar pendência interna — DP escolhe a função no Alterdata Desktop."),
+    ("reprocessar_pendentes_no_polling",
+     "Reprocessar emails com label 'pendente' a cada passada",
+     "Remove a label e tenta de novo. Pode gastar Claude à toa — só ligue se você espera muita resposta de cliente."),
+    ("postar_sem_departamento_quando_vazio",
+     "Mandar admissão SEM departamento quando a empresa não tem cadastrado",
+     "Se a empresa tem departamento cadastrado no eContador, escolhe normal. Se a empresa não tem nenhum departamento, envia sem em vez de virar pendência — DP atribui no Alterdata Desktop (REGRA 0)."),
+  ] %}
+
+  {% for key, titulo, descricao in bools %}
+    <div class="form-group cfg-row">
+      <label>
+        <input type="checkbox" name="{{ key }}"
+               hx-post="{{ url_for('configuracoes_salvar') }}?campo={{ key }}"
+               hx-trigger="change"
+               hx-include="this"
+               hx-target="#cfg-status-{{ key }}"
+               hx-swap="outerHTML"
+               {% if config_atual.get(key) %}checked{% endif %}>
+        {{ titulo }}
+        {% if descricao %}<small class="muted">{{ descricao }}</small>{% endif %}
+      </label>
+      <span id="cfg-status-{{ key }}" class="cfg-status-slot"></span>
+    </div>
+  {% endfor %}
+
+  <div class="form-group cfg-row">
+    <label for="polling_intervalo_segundos">Intervalo de polling (segundos)</label>
+    <input type="number" id="polling_intervalo_segundos"
+           name="polling_intervalo_segundos"
+           min="60" max="3600" step="60"
+           inputmode="numeric"
+           value="{{ config_atual.polling_intervalo_segundos|default(300) }}"
+           hx-post="{{ url_for('configuracoes_salvar') }}?campo=polling_intervalo_segundos"
+           hx-trigger="change, keyup changed delay:600ms"
+           hx-include="this"
+           hx-target="#cfg-status-polling_intervalo_segundos"
+           hx-swap="outerHTML">
+    <span id="cfg-status-polling_intervalo_segundos" class="cfg-status-slot"></span>
+    <small class="muted">Entre 60 e 3600. Padrão 300 = 5 min.</small>
+  </div>
+
+  <div class="form-group cfg-row">
+    <label for="pausa_entre_emails_segundos">Pausa entre emails (segundos)</label>
+    <input type="number" id="pausa_entre_emails_segundos"
+           name="pausa_entre_emails_segundos"
+           min="0" max="300" step="5"
+           inputmode="numeric"
+           value="{{ config_atual.pausa_entre_emails_segundos|default(20) }}"
+           hx-post="{{ url_for('configuracoes_salvar') }}?campo=pausa_entre_emails_segundos"
+           hx-trigger="change, keyup changed delay:600ms"
+           hx-include="this"
+           hx-target="#cfg-status-pausa_entre_emails_segundos"
+           hx-swap="outerHTML">
+    <span id="cfg-status-pausa_entre_emails_segundos" class="cfg-status-slot"></span>
+    <small class="muted">Anti-rate-limit Anthropic. 0 desabilita.</small>
+  </div>
+</div>
+
+<div class="card reveal" data-d="2">
+  <h2 class="card-title">Manutenção</h2>
+  <p class="muted small mb-8">
+    Use quando você cadastrou algo direto no eContador ou adicionou cargo
+    novo na planilha — pra forçar o pipeline a reconhecer.
+  </p>
+  <div class="btn-row">
+    <form method="POST" action="{{ url_for('maintenance_recarregar_cbo') }}"
+          style="display:inline"
+          onsubmit="return confirm('Recarregar planilha de cargos (funcoes_cbo.xlsx)?');">
+      <button type="submit" class="btn btn-secondary btn-sm">Recarregar planilha CBO</button>
+    </form>
+    <form method="POST" action="{{ url_for('maintenance_atualizar_cache_empresas') }}"
+          style="display:inline"
+          onsubmit="return confirm('Recarregar o cache de CNPJs do eContador? Demora 5-10s — roda em segundo plano.');">
+      <button type="submit" class="btn btn-secondary btn-sm">Atualizar cache de empresas</button>
+    </form>
+    <form method="POST" action="{{ url_for('maintenance_limpar_fingerprint') }}"
+          style="display:inline"
+          onsubmit="return confirm('Limpar fingerprint de reprocesso? Próximo \'Atualizar agora\' vai rodar tudo de novo, mesmo sem mudança nas tabelas.');">
+      <button type="submit" class="btn btn-ghost btn-sm">Limpar fingerprint</button>
+    </form>
+  </div>
+</div>
+
+{# v2.16.21: card pra reabrir email já processado e re-rodar com fixes novos #}
+<div class="card reveal" data-d="3">
+  <h2 class="card-title">Reabrir email processado</h2>
+  <p class="muted small mb-12">
+    Quando um email foi fechado como "processado" mas você quer rodar de
+    novo (porque um fix do pipeline saiu depois, ou porque o sistema
+    deu sucesso errado), reabra aqui colando o <code>msg_id</code> do
+    Gmail. O sistema remove a label de processado, marca como pendente
+    e limpa o fingerprint pra forçar reprocessamento na próxima passada.
+    <br><br>
+    <strong>Pra achar o msg_id:</strong> abra o email no Gmail, três
+    pontinhos → "Mostrar original" → procure a linha
+    <code>Message-Id: &lt;...@mail.gmail.com&gt;</code> (não esse — esse
+    é diferente!). Mais fácil: <strong>copie do log de Atividade</strong>
+    — toda passada loga
+    <code>📧 INICIANDO email &lt;msg_id&gt; | ...</code>
+  </p>
+  <form method="POST" action="{{ url_for('maintenance_reabrir_email') }}"
+        onsubmit="return confirm('Reabrir esse email? Vai sair da pasta processados, voltar pra pendente, e ser reprocessado no próximo polling (ou Atualizar agora).');">
+    <div class="form-row" style="display:flex; gap:10px; align-items:flex-end;">
+      <div class="form-group" style="flex:1; margin:0;">
+        <label for="msg_id">msg_id do Gmail</label>
+        <input type="text" id="msg_id" name="msg_id"
+               placeholder="ex: 19ee044535860deb"
+               pattern="[0-9a-fA-F]{12,32}"
+               minlength="12" maxlength="32"
+               required autocomplete="off"
+               style="font-family: ui-monospace, Menlo, monospace;">
+        <small class="muted">12 a 32 caracteres hexadecimais.</small>
+      </div>
+      <button type="submit" class="btn btn-primary">Reabrir pra reprocessar</button>
+    </div>
+  </form>
+</div>

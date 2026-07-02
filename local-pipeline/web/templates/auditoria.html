@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+
+{% block nav %}auditoria{% endblock %}
+{% block titulo %}Auditoria{% endblock %}
+
+{% block header_actions %}
+  <span class="small muted">{{ eventos|length }} evento{% if eventos|length != 1 %}s{% endif %}</span>
+{% endblock %}
+
+{% block conteudo %}
+
+  <div class="card">
+    <div class="form-row">
+      <label class="small muted" for="filtro-status">Filtrar status:</label>
+      <select id="filtro-status" style="padding: 6px 10px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--white); font-family: inherit;">
+        <option value="">Todos</option>
+        <option value="sucesso">Sucesso</option>
+        <option value="pendente">Pendente</option>
+        <option value="falha">Falha</option>
+      </select>
+    </div>
+
+    {% if not eventos %}
+      <p class="muted mb-0">Nenhum evento registrado.</p>
+    {% else %}
+      <table class="table" id="tabela-auditoria">
+        <thead>
+          <tr>
+            <th>Timestamp</th>
+            <th>Status</th>
+            <th>Nome</th>
+            <th>Candidato</th>
+            <th>Erro</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for ev in eventos %}
+            {% set st = (ev.status or "")|lower %}
+            <tr data-status="{{ st }}">
+              <td class="nowrap small">{{ ev.timestamp|default("—") }}</td>
+              <td>
+                {% if "sucesso" in st or "ok" in st %}
+                  <span class="badge badge-ok">{{ ev.status }}</span>
+                {% elif "pendente" in st %}
+                  <span class="badge badge-cliente">{{ ev.status }}</span>
+                {% elif "falha" in st or "erro" in st %}
+                  <span class="badge badge-falha">{{ ev.status }}</span>
+                {% else %}
+                  <span class="badge">{{ ev.status|default("—") }}</span>
+                {% endif %}
+              </td>
+              <td><strong>{{ ev.nome|default("—") }}</strong></td>
+              <td class="nowrap">
+                {% if ev.candidato_id %}
+                  <span class="badge badge-ok">#{{ ev.candidato_id }}</span>
+                {% else %}
+                  <span class="muted">—</span>
+                {% endif %}
+              </td>
+              <td>
+                {% if ev.erro %}
+                  <span class="truncate small" title="{{ ev.erro }}">{{ ev.erro }}</span>
+                {% else %}
+                  <span class="muted small">—</span>
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+  </div>
+
+  <script>
+    (function () {
+      var sel = document.getElementById("filtro-status");
+      if (!sel) return;
+      sel.addEventListener("change", function () {
+        var val = sel.value;
+        var linhas = document.querySelectorAll("#tabela-auditoria tbody tr");
+        linhas.forEach(function (tr) {
+          if (!val) { tr.classList.remove("hidden"); return; }
+          var st = tr.getAttribute("data-status") || "";
+          if (st.indexOf(val) >= 0) tr.classList.remove("hidden");
+          else tr.classList.add("hidden");
+        });
+      });
+    })();
+  </script>
+
+{% endblock %}

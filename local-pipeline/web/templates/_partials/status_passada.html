@@ -1,0 +1,35 @@
+<div class="card-body">
+  {% if mensagem %}
+    <p class="small muted">{{ mensagem }}</p>
+  {% endif %}
+
+  <p>
+    {% if passada.rodando %}
+      <span class="pill pill-rodando">Rodando</span>
+    {% else %}
+      <span class="pill pill-parado">Parado</span>
+    {% endif %}
+  </p>
+
+  {% if passada.iniciada_em %}
+    <p class="small"><strong>Iniciada em:</strong> {{ passada.iniciada_em }}</p>
+  {% endif %}
+
+  {% if passada.terminada_em %}
+    <p class="small"><strong>Terminada em:</strong> {{ passada.terminada_em }}</p>
+  {% endif %}
+
+  {% if passada.erro %}
+    <p class="small" style="color: var(--danger);"><strong>Erro:</strong> {{ passada.erro }}</p>
+  {% endif %}
+
+  {% if passada.ultimo_resumo %}
+    <div class="divider"></div>
+    <p class="small muted mb-0"><strong>Último resumo</strong></p>
+    <p class="small mb-0">
+      Chamadas Claude: {{ passada.ultimo_resumo.n_calls|default(0) }}
+      · Tokens in: {{ passada.ultimo_resumo.input_tokens|default(0) }}
+      · Tokens out: {{ passada.ultimo_resumo.output_tokens|default(0) }}
+    </p>
+  {% endif %}
+</div>

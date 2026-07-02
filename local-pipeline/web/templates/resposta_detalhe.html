@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+
+{% block nav %}respostas{% endblock %}
+{% block titulo %}Revisar resposta · {{ rec.remetente_nome or rec.remetente_email }}{% endblock %}
+{% block eyebrow %}<span class="eyebrow">Antes de enviar pro cliente</span>{% endblock %}
+
+{% block header_actions %}
+  <a class="btn btn-ghost btn-sm" href="{{ url_for('respostas_listar') }}">← Voltar à fila</a>
+{% endblock %}
+
+{% block conteudo %}
+  <nav class="breadcrumb" aria-label="Trilha">
+    <a href="{{ url_for('respostas_listar') }}">Respostas</a> ›
+    {{ rec.remetente_email }}
+  </nav>
+
+  <div class="card reveal">
+    <h2 class="card-title">Contexto</h2>
+    <div class="grid-attrs">
+      <div class="attr">
+        <span class="attr-label">Pra</span>
+        <span class="attr-value">
+          {{ rec.remetente_nome or '—' }}
+          <code class="small muted">&lt;{{ rec.remetente_email }}&gt;</code>
+        </span>
+      </div>
+      <div class="attr">
+        <span class="attr-label">Assunto</span>
+        <span class="attr-value">{{ rec.assunto or '(sem assunto)' }}</span>
+      </div>
+      <div class="attr">
+        <span class="attr-label">Empresa</span>
+        <span class="attr-value">{{ rec.contexto.razao_social or '—' }}</span>
+      </div>
+      <div class="attr">
+        <span class="attr-label">Gerado em</span>
+        <span class="attr-value">{{ rec.ts_criado|replace('T', ' ') }}</span>
+      </div>
+    </div>
+    {% if rec.contexto.nomes_sucesso %}
+      <p class="small mt-12">
+        <span class="badge badge-ok">processados ({{ rec.contexto.n_sucessos }})</span>
+        {{ rec.contexto.nomes_sucesso|join(', ') }}
+      </p>
+    {% endif %}
+    {% if rec.contexto.nomes_pendente %}
+      <p class="small mb-0">
+        <span class="badge badge-cliente">pendentes ({{ rec.contexto.n_falhas_cliente }})</span>
+        {{ rec.contexto.nomes_pendente|join(', ') }}
+      </p>
+    {% endif %}
+  </div>
+
+  <div class="card card-acao-necessaria reveal" data-d="1">
+    <h2 class="card-title">Email proposto</h2>
+    <p class="small muted mb-12">
+      Edite à vontade — o pipeline só sugere o texto. Você pode reescrever,
+      cortar, adicionar contexto humano. Clique <strong>"Aprovar e enviar"</strong>
+      quando estiver bom. O sistema responde no mesmo thread do cliente, com
+      cópia pro email do DP cadastrado em <code>config.json</code>.
+    </p>
+
+    <form method="POST" action="{{ url_for('respostas_aprovar', rid=rec.id) }}">
+      <div class="form-group">
+        <label for="corpo_editado">Corpo do email</label>
+        <textarea id="corpo_editado" name="corpo_editado"
+                  class="perfil-anotacoes-textarea"
+                  style="min-height: 280px; font-family: ui-monospace, Menlo, monospace; font-size: 13px;"
+                  hx-post="{{ url_for('respostas_salvar_edicao', rid=rec.id) }}"
+                  hx-trigger="input changed delay:1500ms"
+                  hx-swap="none"
+                  hx-indicator="#salvando">{{ rec.corpo_editado or rec.corpo_proposto }}</textarea>
+        <small class="muted">
+          Auto-salva enquanto você edita. <span id="salvando" class="htmx-indicator"><span class="spinner"></span> salvando…</span>
+        </small>
+      </div>
+
+      <div class="btn-row mt-16">
+        <button type="submit" class="btn btn-primary"
+                onclick="return confirm('Aprovar e ENVIAR este email pra {{ rec.remetente_email|e }}? Não dá pra desfazer.');">
+          Aprovar e enviar
+        </button>
+      </div>
+    </form>
+  </div>
+
+  <div class="card reveal" data-d="2">
+    <h2 class="card-title">Original do pipeline (referência)</h2>
+    <p class="small muted mb-8">Texto exato gerado pelo sistema, antes de qualquer edição sua.</p>
+    <pre style="white-space:pre-wrap; background:rgba(0,0,0,.04); padding:14px; border-radius:8px; border:1px solid var(--border-card); font-family: ui-monospace, Menlo, monospace; font-size: 12.5px;">{{ rec.corpo_proposto }}</pre>
+  </div>
+
+  <div class="card reveal" data-d="3">
+    <h2 class="card-title">Não usar</h2>
+    <p class="small muted mb-12">
+      Quando o texto não faz sentido (Claude alucinou, erro do cliente,
+      situação que precisa abordar offline), descarte. Admissão fica como
+      pendência normal e você responde manualmente ao cliente.
+    </p>
+    <form method="POST" action="{{ url_for('respostas_descartar', rid=rec.id) }}"
+          onsubmit="return confirm('Descartar? O cliente NÃO vai receber nada deste rascunho.');">
+      <div class="form-group">
+        <label for="motivo">Motivo do descarte (opcional)</label>
+        <input type="text" id="motivo" name="motivo"
+               placeholder="ex.: Cliente mandou docs trocados, vou ligar">
+      </div>
+      <button type="submit" class="btn btn-ghost">Descartar rascunho</button>
+    </form>
+  </div>
+{% endblock %}
