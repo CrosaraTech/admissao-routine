@@ -794,7 +794,7 @@ def _reprocessar_msg_em_thread(msg_id: str):
         except Exception as e:
             log.debug(f"   nada pra remover: {e}")
         # Busca a mensagem
-        msg = gmail.servico.users().messages().get(
+        msg = gmail.service.users().messages().get(
             userId="me", id=msg_id, format="full"
         ).execute()
         claude = ClaudeClient(
