@@ -1806,6 +1806,43 @@ def postar_pendencia(msg_id: str, nome: str, cnpj: str):
             if res.pulou else
             f"Candidato {res.candidato_id} criado com sucesso.{aviso_planilha}"
         )
+
+        # v2.16.45: sugere salvar salario como padrao pra <cargo>+<remetente>
+        # quando operador informou salario manualmente via form E perfil ainda
+        # nao tem valor cadastrado pra esse cargo. Caso real recorrente:
+        # cliente escreve "salario base" e Claude marca pendente. Depois DP
+        # digita valor no form 3x, 4x, 5x... — cadastrar como padrao evita
+        # digitacao no proximo email do mesmo remetente.
+        try:
+            if ("salario" in sobrescreveu
+                    and not res.pulou
+                    and attrs_final.get("nomecargo")):
+                import perfis_remetente as pr_mod
+                rem_raw = doc.get("remetente") or ""
+                rem_email = pr_mod._extrair_email(rem_raw)
+                cargo = str(attrs_final.get("nomecargo") or "").upper().strip()
+                sal_novo = float(attrs_final.get("salario") or 0)
+                if rem_email and cargo and sal_novo > 0:
+                    perf = pr_mod.perfil_de(rem_email,
+                                             consolidar_se_faltar=False) or {}
+                    ja_tem = (perf.get("salarios_manuais_por_cargo")
+                              or {}).get(cargo)
+                    if not ja_tem:
+                        return render_template(
+                            "sugestao_salario.html",
+                            msg=msg,
+                            remetente=rem_email,
+                            cargo=cargo,
+                            salario=sal_novo,
+                            action=url_for(
+                                "perfis_salvar_salario_cargo",
+                                remetente=rem_email,
+                            ),
+                            skip_url=url_for("pendentes"),
+                        )
+        except Exception:
+            log.exception("[postar] sugestao salario padrao falhou (nao critico)")
+
         return _resposta_ok_ou_htmx(msg, redirect_url=url_for("pendentes"))
 
     return _resposta_erro(

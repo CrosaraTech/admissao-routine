@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+
+{% block nav %}pendentes{% endblock %}
+{% block titulo %}Sugestão de padrão{% endblock %}
+
+{% block conteudo %}
+
+<div class="card reveal">
+  <div class="banner banner-ok" style="margin-bottom:16px">
+    <strong>✓ {{ msg }}</strong>
+  </div>
+
+  <h2 class="card-title">Salvar como padrão pra próximas admissões?</h2>
+  <p class="small muted mb-12">
+    Você digitou o salário manualmente. Se esse remetente costuma mandar
+    o mesmo cargo com salário fixo, cadastre agora — o sistema vai
+    preencher automático nas próximas admissões sem virar pendência.
+  </p>
+
+  <div class="grid-attrs" style="margin-bottom:20px">
+    <div class="attr">
+      <span class="attr-label">Remetente</span>
+      <span class="attr-value">{{ remetente }}</span>
+    </div>
+    <div class="attr">
+      <span class="attr-label">Cargo</span>
+      <span class="attr-value"><strong>{{ cargo }}</strong></span>
+    </div>
+    <div class="attr">
+      <span class="attr-label">Salário sugerido</span>
+      <span class="attr-value">
+        <strong>R$ {{ "%.2f"|format(salario)|replace('.', ',') }}</strong>
+      </span>
+    </div>
+  </div>
+
+  <div style="display:flex; gap:12px; align-items:center;">
+    <form method="POST" action="{{ action }}" style="display:inline">
+      <input type="hidden" name="cargo" value="{{ cargo }}">
+      <input type="hidden" name="valor"
+             value="{{ '%.2f'|format(salario)|replace('.', ',') }}">
+      <button type="submit" class="btn btn-primary">
+        Salvar R$ {{ "%.2f"|format(salario)|replace('.', ',') }} como padrão
+      </button>
+    </form>
+
+    <a href="{{ skip_url }}" class="btn btn-ghost">
+      Não obrigado, só voltar
+    </a>
+  </div>
+
+  <p class="small muted" style="margin-top:20px">
+    Você pode ver/editar todos os salários fixos por cargo em
+    <a href="{{ url_for('perfis_detalhe', remetente=remetente) }}">
+      Perfis → {{ remetente }}
+    </a>.
+  </p>
+</div>
+
+{% endblock %}
