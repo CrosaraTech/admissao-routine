@@ -192,7 +192,7 @@ python main.py montar-payload /tmp/admissao/<msg_id>/campos.json <empresa_id> <f
 Imprime o payload JSON:API completo, com todas as regras aplicadas:
 - `statusadmissao = "1"` (Análise — verde, desce direto pro Desktop)
 - `tipoidentidade = "1"` (workaround off-by-one — UI renderiza "RG")
-- `raca = "4"` (default Parda — API armazena correto)
+- `raca = "8"` (Parda — v2.16.43: bug off-by-one fixado por Alterdata em 2026-07-01)
 - `pais = paisnascimento = nacionalidade = "105"` (Brasil)
 - `tipovinculotrabalhista = "10"` (CLT Urbano PF Indeterminado)
 - `formapagamento = "4"` (Mensal — bug: DP corrige no Desktop)
@@ -263,6 +263,6 @@ importantes pra você saber:
 - `diascontratoexperiencia` chega como `2` no Desktop mesmo enviando 30 — bug
 - Datas null viram `30/12/1899` no Desktop — por isso **NUNCA enviar datas nulas**
 - CPF com zeros à esquerda some — por isso integer
-- Raça off-by-one bilateral — `id=4` (Parda) é o que faz API armazenar correto
-- Tipo de identidade off-by-one — `id=1` faz UI mostrar "RG"
-- Categoria CNH off-by-one parcial — `id+1` do desejado
+- ~~Raça off-by-one~~ **FIXED 2026-07-01** — ids válidos 1,2,3,6,8,9. Parda = 8.
+- ~~Tipo de identidade off-by-one~~ **FIXED 2026-07-01** — RG=1, RIC=2, RNE=3.
+- ~~Categoria CNH off-by-one~~ **FIXED 2026-07-01** — endpoint renomeado `/categorias-cnh` → `/tipos-cnh`. IDs 1-9 round-trip OK.
