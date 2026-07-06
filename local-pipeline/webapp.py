@@ -1591,6 +1591,15 @@ _OVERRIDES_PERMITIDOS = {
     "email", "celular", "telefone",
 }
 
+# v2.16.53: overrides de relationship que operador pode setar via form.
+# Chave = nome do rel; valor = tipo da API. Form envia `rel_<nome>` = id.
+_OVERRIDES_RELS_PERMITIDAS = {
+    "sexo":         "tipos-sexo",
+    "estadocivil":  "tipos-estado-civil",
+    "escolaridade": "tipos-escolaridade",
+    "naturalidade": "estados",
+}
+
 
 def _parse_salario_br(v) -> float:
     """Aceita formatos comuns no Brasil: '1500', '1500,00', '1.500,00',
@@ -1639,9 +1648,30 @@ def postar_pendencia(msg_id: str, nome: str, cnpj: str):
     # Aplica overrides do form com ALLOWLIST (review §HIGH — proteção contra
     # campos perigosos tipo statusadmissao=2).
     sobrescreveu: list[str] = []
+    # v2.16.53: form fields prefixados 'rel_<nome>' setam relationships
+    # antes do loop de attrs. Ex: 'rel_sexo=2' -> attrs.rel sexo = tipos-sexo/2.
+    _rels_ovr = payload["data"].setdefault("relationships", {})
+    for _fk, _fv in list(request.form.items()):
+        if not _fk.startswith("rel_") or not _fv:
+            continue
+        _rel_nome = _fk[4:]
+        _rel_tipo = _OVERRIDES_RELS_PERMITIDAS.get(_rel_nome)
+        if not _rel_tipo:
+            return _resposta_erro(
+                f"Rel '{_rel_nome}' nao permitido. "
+                f"Permitidos: {', '.join(sorted(_OVERRIDES_RELS_PERMITIDAS))}"
+            )
+        _rid = re.sub(r"\D", "", str(_fv))
+        if not _rid:
+            continue
+        _rels_ovr[_rel_nome] = {"data": {"type": _rel_tipo, "id": _rid}}
+        sobrescreveu.append(_rel_nome)
+
     for k, v in request.form.items():
         if k in ("permitir_duplicata", "csrf_token", "forcar") or not v:
             continue
+        if k.startswith("rel_"):
+            continue  # ja processado acima
         if k not in _OVERRIDES_PERMITIDOS:
             return _resposta_erro(
                 f"Campo não permitido: '{k}'. "

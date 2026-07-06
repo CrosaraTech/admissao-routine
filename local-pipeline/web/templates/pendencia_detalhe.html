@@ -279,6 +279,71 @@
           </div>
         </div>
 
+        {# v2.16.53: campos de rel obrigatorios (Sexo, Naturalidade UF,
+           Estado Civil, Escolaridade). Preenche quando Claude nao extraiu
+           e defaults automaticos nao cobrem. #}
+        <div class="form-row" style="margin-top:12px">
+          <div class="form-group">
+            <label for="rel_sexo">Sexo</label>
+            <select id="rel_sexo" name="rel_sexo">
+              <option value="">(usar default se vazio)</option>
+              <option value="1">Masculino</option>
+              <option value="2">Feminino</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="rel_estadocivil">Estado Civil</label>
+            <select id="rel_estadocivil" name="rel_estadocivil">
+              <option value="">(usar Solteiro)</option>
+              <option value="1">Solteiro</option>
+              <option value="2">Casado</option>
+              <option value="3">Divorciado</option>
+              <option value="4">Viúvo</option>
+              <option value="5">União estável</option>
+              <option value="6">Separado</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="rel_escolaridade">Escolaridade</label>
+            <select id="rel_escolaridade" name="rel_escolaridade">
+              <option value="">(usar Médio completo)</option>
+              <option value="1">Analfabeto</option>
+              <option value="2">Fundamental incompleto (até 4ª)</option>
+              <option value="3">Fundamental completo (até 4ª)</option>
+              <option value="4">Fundamental incompleto (após 4ª)</option>
+              <option value="5">Fundamental completo</option>
+              <option value="6">Médio incompleto</option>
+              <option value="7">Médio completo</option>
+              <option value="8">Superior incompleto</option>
+              <option value="9">Superior completo</option>
+              <option value="10">Especialização</option>
+              <option value="11">Mestrado</option>
+              <option value="12">Doutorado</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="rel_naturalidade">Naturalidade (UF de nascimento)</label>
+            <select id="rel_naturalidade" name="rel_naturalidade">
+              <option value="">(usar Goiás)</option>
+              <option value="1">AC</option><option value="2">AL</option>
+              <option value="3">AM</option><option value="4">AP</option>
+              <option value="5">BA</option><option value="6">CE</option>
+              <option value="7">DF</option><option value="8">ES</option>
+              <option value="9" selected>GO</option><option value="10">MA</option>
+              <option value="11">MG</option><option value="12">MS</option>
+              <option value="13">MT</option><option value="14">PA</option>
+              <option value="15">PB</option><option value="16">PE</option>
+              <option value="17">PI</option><option value="18">PR</option>
+              <option value="19">RJ</option><option value="20">RN</option>
+              <option value="21">RO</option><option value="22">RR</option>
+              <option value="23">RS</option><option value="24">SC</option>
+              <option value="25">SE</option><option value="26">SP</option>
+              <option value="27">TO</option>
+            </select>
+            <small class="muted">Municipio de nasc {{ attrs.get('municipionascimento', '(?)') }} — escolha UF certo se nao for GO.</small>
+          </div>
+        </div>
+
         {% if duplicatas %}
           <div class="form-row mt-16">
             <label class="checkbox-row">
