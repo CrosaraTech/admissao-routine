@@ -55,6 +55,7 @@
         <a href="{{ url_for('respostas_listar') }}" class="{% if nav == 'respostas' %}active{% endif %}">Respostas {% if contadores_sidebar.rascunhos_pendentes %}<span class="nav-badge">{{ contadores_sidebar.rascunhos_pendentes }}</span>{% endif %}</a>
         <a href="{{ url_for('configuracoes_pagina') }}" class="{% if nav == 'configuracoes' %}active{% endif %}">Configurações</a>
         <a href="{{ url_for('perfis_listar') }}" class="{% if nav == 'perfis' %}active{% endif %}">Perfis</a>
+        <a href="{{ url_for('cbo_listar') }}" class="{% if nav == 'cbo' %}active{% endif %}">Planilha CBO</a>
         <a href="{{ url_for('importar_form') }}" class="{% if nav == 'importar' %}active{% endif %}">Importar</a>
       </nav>
       <div class="sidebar-acesso">

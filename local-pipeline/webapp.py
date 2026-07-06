@@ -1011,6 +1011,147 @@ def maintenance_atualizar_cache_empresas():
     )
 
 
+@app.route("/cbo", methods=["GET"])
+def cbo_listar():
+    """v2.16.47: UI de gerenciamento da planilha funcoes_cbo.xlsx.
+
+    Substitui edicao manual no Excel. Operador busca cargo, ve todas as
+    opcoes ja cadastradas na planilha (com CBO + funcao_id + status usar),
+    e pode: marcar/desmarcar X, editar CBO/funcao_id, adicionar cargo novo.
+    """
+    from main import carregar_planilha, PLANILHA_CBO
+    from funcao import _norm
+    q = (request.args.get("q") or "").strip()
+    apenas_x = request.args.get("x") == "on"
+    try:
+        planilha = carregar_planilha(PLANILHA_CBO)
+    except Exception as e:
+        return _resposta_erro(f"Falha lendo planilha: {e}")
+
+    # Enumera pra manter indice estavel entre filtro e edit
+    itens = [{**it, "_idx": i} for i, it in enumerate(planilha)]
+    total_all = len(itens)
+    total_x = sum(1 for it in itens if it.get("usar"))
+    if apenas_x:
+        itens = [it for it in itens if it.get("usar")]
+    if q:
+        qn = _norm(q)
+        # Match por nome_cargo (substring) OU cbo exato
+        d = re.sub(r"\D", "", q)
+        itens = [
+            it for it in itens
+            if qn in _norm(it.get("nome_cargo", ""))
+            or (d and d == re.sub(r"\D", "", str(it.get("cbo", ""))))
+            or (d and d == str(it.get("funcao_id", "")))
+        ]
+    # Limita render pra nao travar navegador em 9k linhas sem filtro
+    max_render = 200
+    truncado = len(itens) > max_render
+    itens = itens[:max_render]
+    return render_template(
+        "cbo.html",
+        itens=itens,
+        q=q,
+        apenas_x=apenas_x,
+        total_all=total_all,
+        total_x=total_x,
+        truncado=truncado,
+        max_render=max_render,
+    )
+
+
+@app.route("/cbo/salvar", methods=["POST"])
+def cbo_salvar_linha():
+    """v2.16.47: aplica edicoes em uma linha OU adiciona nova.
+
+    Form:
+      - idx (int, opcional): indice na planilha carregada. Se ausente ->
+        adiciona nova linha.
+      - nome_cargo, cbo, funcao_id, codigo, usar (on/off)
+    """
+    from main import carregar_planilha, PLANILHA_CBO
+    from funcao import salvar_planilha
+    try:
+        planilha = carregar_planilha(PLANILHA_CBO)
+    except Exception as e:
+        return _resposta_erro(f"Falha lendo planilha: {e}")
+
+    idx_raw = (request.form.get("idx") or "").strip()
+    nome = (request.form.get("nome_cargo") or "").strip().upper()
+    cbo = re.sub(r"\D", "", request.form.get("cbo") or "")
+    funcao_id = re.sub(r"\D", "", request.form.get("funcao_id") or "")
+    codigo = (request.form.get("codigo") or "").strip()
+    usar = request.form.get("usar") in ("on", "1", "true", "yes")
+
+    if not nome:
+        return _resposta_erro("nome_cargo obrigatorio.")
+    if not funcao_id:
+        return _resposta_erro("funcao_id obrigatorio (id da funcao no eContador).")
+
+    novo = {
+        "nome_cargo": nome, "cbo": cbo, "funcao_id": funcao_id,
+        "codigo": codigo, "usar": usar,
+    }
+    if idx_raw:
+        try:
+            idx = int(idx_raw)
+            if idx < 0 or idx >= len(planilha):
+                return _resposta_erro("idx invalido.")
+            planilha[idx] = novo
+            acao = f"editada linha {idx}"
+        except ValueError:
+            return _resposta_erro("idx nao numerico.")
+    else:
+        # Adiciona (verifica se ja existe pelo funcao_id pra evitar duplicata)
+        for i, it in enumerate(planilha):
+            if str(it.get("funcao_id", "")) == funcao_id:
+                planilha[i] = novo
+                acao = f"substituida linha {i} (mesmo funcao_id={funcao_id})"
+                break
+        else:
+            planilha.append(novo)
+            acao = f"adicionada linha nova (total agora {len(planilha)})"
+
+    try:
+        salvar_planilha(PLANILHA_CBO, planilha)
+    except Exception as e:
+        log.exception("Falha salvando planilha CBO")
+        return _resposta_erro(f"Falha salvando: {e}")
+
+    log.info(f"[cbo] {acao} — {nome!r} cbo={cbo} funcao_id={funcao_id} usar={usar}")
+    return _resposta_ok_ou_htmx(
+        f"OK — {acao}. Rode 'Recarregar CBO' no dashboard pra pipeline pegar.",
+        redirect_url=url_for("cbo_listar", q=nome[:20]),
+    )
+
+
+@app.route("/cbo/toggle", methods=["POST"])
+def cbo_toggle_x():
+    """v2.16.47: toggle rapido do 'usar' (X) por idx. Usado pelo botao inline."""
+    from main import carregar_planilha, PLANILHA_CBO
+    from funcao import salvar_planilha
+    try:
+        planilha = carregar_planilha(PLANILHA_CBO)
+    except Exception as e:
+        return _resposta_erro(f"Falha lendo: {e}")
+    try:
+        idx = int(request.form.get("idx") or "-1")
+        if idx < 0 or idx >= len(planilha):
+            return _resposta_erro("idx invalido.")
+    except ValueError:
+        return _resposta_erro("idx nao numerico.")
+    planilha[idx]["usar"] = not planilha[idx].get("usar")
+    try:
+        salvar_planilha(PLANILHA_CBO, planilha)
+    except Exception as e:
+        return _resposta_erro(f"Falha salvando: {e}")
+    novo = "X" if planilha[idx]["usar"] else "—"
+    return _resposta_ok_ou_htmx(
+        f"'{planilha[idx]['nome_cargo']}' agora usar={novo}",
+        redirect_url=request.form.get("redir") or url_for("cbo_listar"),
+    )
+
+
 @app.route("/maintenance/recarregar-cbo", methods=["POST"])
 def maintenance_recarregar_cbo():
     """Recarrega funcoes_cbo.xlsx. Útil quando você adicionou um cargo novo.

@@ -65,7 +65,7 @@ LOGO_PATH = Path(__file__).parent / "Logotipo Crosara - CMYK-04.jpg"
 ADMITER_LOGO_PNG = Path(__file__).parent / "admitir-logo.png"
 ADMITER_LOGO_ICO = Path(__file__).parent / "admitir-logo.ico"
 APP_NAME = "AdmitER"
-APP_VERSION = "2.16.46"
+APP_VERSION = "2.16.47"
 APP_TAGLINE = "Pipeline de Admissão Automatizada"
 APP_VENDOR = "CrosaraTech"
 

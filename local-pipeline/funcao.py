@@ -46,6 +46,35 @@ def _cbo_digitos(s: str | int | None) -> str:
     return re.sub(r"\D", "", str(s or ""))
 
 
+def salvar_planilha(path: Path, items: list[dict]) -> None:
+    """v2.16.47: regrava funcoes_cbo.xlsx a partir da lista em memoria.
+    Mantem colunas: usar, nome_cargo, cbo, funcao_id, codigo.
+
+    Uso: UI /cbo edita/adiciona/toggle X e salva de volta pra planilha
+    substituir edicao manual no Excel.
+    """
+    from openpyxl import Workbook as _WB
+    wb = _WB()
+    ws = wb.active
+    ws.title = "cargos"
+    ws.append(["usar", "nome_cargo", "cbo", "funcao_id", "codigo"])
+    for it in items:
+        ws.append([
+            "X" if it.get("usar") else "",
+            str(it.get("nome_cargo") or "").strip(),
+            str(it.get("cbo") or "").strip(),
+            str(it.get("funcao_id") or "").strip(),
+            str(it.get("codigo") or "").strip(),
+        ])
+    # Coluna A largura pequena, resto ampla
+    ws.column_dimensions["A"].width = 6
+    ws.column_dimensions["B"].width = 55
+    ws.column_dimensions["C"].width = 12
+    ws.column_dimensions["D"].width = 12
+    ws.column_dimensions["E"].width = 14
+    wb.save(path)
+
+
 def carregar_planilha(path: Path) -> list[dict]:
     """Lê funcoes_cbo.xlsx e retorna lista de {nome_cargo, cbo, funcao_id, usar, codigo}."""
     if not path.exists():

@@ -1,0 +1,155 @@
+{% extends "base.html" %}
+
+{% block nav %}cbo{% endblock %}
+{% block titulo %}Planilha CBO ({{ total_x }} X de {{ total_all }} cargos){% endblock %}
+
+{% block header_actions %}
+  <form method="POST" action="{{ url_for('maintenance_recarregar_cbo') }}"
+        style="display:inline">
+    <button type="submit" class="btn btn-ghost btn-sm">🔄 Recarregar</button>
+  </form>
+{% endblock %}
+
+{% block conteudo %}
+
+<div class="card">
+  <h2 class="card-title">Buscar cargo</h2>
+  <form method="GET" action="{{ url_for('cbo_listar') }}" style="display:flex; gap:8px; align-items:center; flex-wrap:wrap">
+    <input type="search" name="q" value="{{ q }}"
+           placeholder="Nome do cargo, CBO ou funcao_id..."
+           style="flex:1; min-width:260px; padding:8px 12px"
+           autofocus>
+    <label style="display:flex; gap:6px; align-items:center">
+      <input type="checkbox" name="x" {% if apenas_x %}checked{% endif %}>
+      <span class="small">Só X-marcados</span>
+    </label>
+    <button type="submit" class="btn btn-primary btn-sm">Buscar</button>
+    {% if q or apenas_x %}
+      <a href="{{ url_for('cbo_listar') }}" class="btn btn-ghost btn-sm">Limpar</a>
+    {% endif %}
+  </form>
+  {% if truncado %}
+    <p class="small muted mb-0" style="margin-top:8px">
+      Mostrando primeiros {{ max_render }} — refine a busca pra ver o resto.
+    </p>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2 class="card-title">Resultados ({{ itens|length }})</h2>
+  {% if not itens %}
+    <p class="muted">Nenhum cargo com esse filtro.</p>
+  {% else %}
+    <table class="table">
+      <thead>
+        <tr>
+          <th>Usar</th>
+          <th>Nome cargo</th>
+          <th>CBO</th>
+          <th>funcao_id</th>
+          <th>Código</th>
+          <th class="col-acao">Ação</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for it in itens %}
+          <tr>
+            <td class="nowrap">
+              <form method="POST" action="{{ url_for('cbo_toggle_x') }}" style="display:inline">
+                <input type="hidden" name="idx" value="{{ it._idx }}">
+                <input type="hidden" name="redir"
+                       value="{{ url_for('cbo_listar', q=q, x='on' if apenas_x else '') }}">
+                {% if it.usar %}
+                  <button type="submit" class="btn btn-primary btn-xs"
+                          title="Desmarcar (nao usar)">X</button>
+                {% else %}
+                  <button type="submit" class="btn btn-ghost btn-xs"
+                          title="Marcar como X (usar no pipeline)">—</button>
+                {% endif %}
+              </form>
+            </td>
+            <td><strong>{{ it.nome_cargo }}</strong></td>
+            <td class="small nowrap">{{ it.cbo or '—' }}</td>
+            <td class="small nowrap"><code>{{ it.funcao_id }}</code></td>
+            <td class="small nowrap">{{ it.codigo or '—' }}</td>
+            <td class="col-acao">
+              <button type="button" class="btn btn-ghost btn-xs"
+                      onclick="abrirEditor({{ it._idx }}, {{ it.nome_cargo|tojson }},
+                                          {{ (it.cbo or '')|tojson }},
+                                          {{ (it.funcao_id or '')|tojson }},
+                                          {{ (it.codigo or '')|tojson }},
+                                          {{ (it.usar or false)|tojson }})">
+                Editar
+              </button>
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2 class="card-title">Adicionar cargo novo</h2>
+  <p class="small muted mb-12">
+    Deixe idx vazio pra criar. Se já existe cargo com o mesmo funcao_id, sobrescreve.
+    Após salvar, clique <strong>Recarregar</strong> no header pra pipeline pegar.
+  </p>
+  <form method="POST" action="{{ url_for('cbo_salvar_linha') }}" id="form-cbo"
+        style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+    <input type="hidden" name="idx" id="f-idx" value="">
+    <div>
+      <label for="f-nome"><strong>Nome do cargo</strong></label>
+      <input type="text" name="nome_cargo" id="f-nome"
+             placeholder="ex: AUXILIAR ADMINISTRATIVO"
+             style="width:100%; padding:6px 10px" required>
+    </div>
+    <div>
+      <label for="f-cbo"><strong>CBO (6 dígitos)</strong></label>
+      <input type="text" name="cbo" id="f-cbo"
+             placeholder="411010" inputmode="numeric" maxlength="6"
+             style="width:100%; padding:6px 10px">
+    </div>
+    <div>
+      <label for="f-fid"><strong>funcao_id</strong> (do eContador)</label>
+      <input type="text" name="funcao_id" id="f-fid"
+             placeholder="ex: 12345" inputmode="numeric"
+             style="width:100%; padding:6px 10px" required>
+    </div>
+    <div>
+      <label for="f-codigo"><strong>Código interno</strong> (opcional)</label>
+      <input type="text" name="codigo" id="f-codigo"
+             style="width:100%; padding:6px 10px">
+    </div>
+    <div style="grid-column:1/-1; display:flex; gap:10px; align-items:center">
+      <label style="display:flex; gap:6px; align-items:center">
+        <input type="checkbox" name="usar" id="f-usar">
+        <strong>Marcar como X</strong> (usar no pipeline)
+      </label>
+      <div style="flex:1"></div>
+      <button type="button" class="btn btn-ghost" onclick="limparEditor()">
+        Limpar
+      </button>
+      <button type="submit" class="btn btn-primary">Salvar</button>
+    </div>
+  </form>
+</div>
+
+<script>
+  function abrirEditor(idx, nome, cbo, fid, codigo, usar) {
+    document.getElementById("f-idx").value = idx;
+    document.getElementById("f-nome").value = nome;
+    document.getElementById("f-cbo").value = cbo;
+    document.getElementById("f-fid").value = fid;
+    document.getElementById("f-codigo").value = codigo;
+    document.getElementById("f-usar").checked = !!usar;
+    document.getElementById("f-nome").scrollIntoView({behavior: "smooth", block: "center"});
+    document.getElementById("f-nome").focus();
+  }
+  function limparEditor() {
+    document.getElementById("f-idx").value = "";
+    document.getElementById("form-cbo").reset();
+  }
+</script>
+
+{% endblock %}
