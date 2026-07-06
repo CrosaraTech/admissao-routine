@@ -1737,6 +1737,38 @@ def _processar_um_bloco(
                     f"      🧠 Defaults do perfil de {rem}: "
                     f"{', '.join(preenchidos)}"
                 )
+                # v2.16.51: se perfil resolveu SALARIO_AUSENTE (cadastro manual
+                # do operador), removemos o codigo bloqueante. Se era o unico
+                # motivo pendente, o bloco sai do _pendente e segue direto.
+                if any(p.startswith("salario=") for p in preenchidos):
+                    _cod = str(bloco.get("_motivo_codigo") or "").upper().strip()
+                    _cods = bloco.get("_motivos_codigos") or []
+                    if isinstance(_cods, list):
+                        _cods_novo = [
+                            c for c in _cods
+                            if str(c).upper().strip() != "SALARIO_AUSENTE"
+                        ]
+                        bloco["_motivos_codigos"] = _cods_novo
+                    if _cod == "SALARIO_AUSENTE":
+                        bloco.pop("_motivo_codigo", None)
+                        # Recalcula motivo principal se sobrou outro
+                        _restantes = bloco.get("_motivos_codigos") or []
+                        if _restantes:
+                            bloco["_motivo_codigo"] = _restantes[0]
+                    # Se nao sobrou nenhum codigo bloqueante, promove
+                    _todos = set()
+                    if bloco.get("_motivo_codigo"):
+                        _todos.add(str(bloco["_motivo_codigo"]).upper().strip())
+                    for c in (bloco.get("_motivos_codigos") or []):
+                        _todos.add(str(c).upper().strip())
+                    _todos.discard("")
+                    if not _todos:
+                        log.info(
+                            f"      ✅ [{indice}] {nome}: SALARIO_AUSENTE resolvido "
+                            f"via perfil manual — bloco sai do estado _pendente"
+                        )
+                        bloco.pop("_pendente", None)
+                        bloco.pop("_motivo", None)
     except Exception as e:
         log.warning(
             f"      ⚠ Falha aplicando defaults do perfil: {type(e).__name__}: {e}"

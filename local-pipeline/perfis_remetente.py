@@ -465,6 +465,23 @@ def aplicar_defaults_do_perfil(payload: dict, remetente: str,
     #   2. salario_padrao histórico (média) — só se cargo está em omissoes_habituais
     if _sal_vazio(attrs.get("salario")):
         cargo_atual = (attrs.get("nomecargo") or "").upper().strip()
+        # v2.16.51: fallback cargo em _dados_parciais quando Claude marcou
+        # _pendente na raiz/bloco sem preencher attrs. Caso real ELIAS/EMERSON
+        # (2026-07-06): perfil tem 'OPERADOR DE DESTILACAO' com R$1988.28
+        # cadastrado, mas attrs vazio -> nao aplicava salario manual e
+        # pendencia continuava sendo criada.
+        if not cargo_atual:
+            dp = payload.get("_dados_parciais") or {}
+            if isinstance(dp, dict):
+                for _k in ("cargo", "nomecargo", "nome_cargo", "funcao",
+                           "cargo_nome", "nomefuncao"):
+                    _v = dp.get(_k)
+                    if _v:
+                        cargo_atual = str(_v).upper().strip()
+                        # Promove tambem pra attrs pra proximas etapas verem
+                        attrs.setdefault("nomecargo", cargo_atual)
+                        preenchidos.append(f"nomecargo={cargo_atual!r} (dp->attrs)")
+                        break
         # 1) Manual cadastrado
         sal_manuais = perf.get("salarios_manuais_por_cargo") or {}
         sal_manual = sal_manuais.get(cargo_atual)
