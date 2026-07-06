@@ -555,6 +555,27 @@ def sanitizar_attributes(attrs: dict) -> dict:
         )
         out.pop(campo_data, None)
 
+    # v2.16.49: PIS/PASEP — eContador valida Size(0,14). Caso real ELIAS DE
+    # LIMA CORREIA (2026-07-06): Claude leu '43926726094156944' (17 digitos)
+    # concatenando dois campos do doc. POST caiu com HTTP 422 pointer
+    # /data/attributes/pis 'tamanho deve estar entre 0 e 14'.
+    # Sanitizacao: preserva como string (regra escritorio: zeros a esquerda
+    # importam). Remove pontuacao. Se >11 digitos apos limpar, OMITE — pois
+    # PIS/PASEP oficial tem 11 digitos e >11 = alucinacao/leitura errada.
+    # Preferimos omitir a mandar valor errado (DP preenche manual no Desktop).
+    if out.get("pis") is not None:
+        pis_d = re.sub(r"\D", "", str(out["pis"]))
+        if not pis_d:
+            out.pop("pis", None)
+        elif len(pis_d) > 11:
+            log.warning(
+                f"[payload] PIS invalido (len={len(pis_d)}, esperado <=11): "
+                f"{pis_d!r} — omitindo pra evitar HTTP 422"
+            )
+            out.pop("pis", None)
+        else:
+            out["pis"] = pis_d
+
     # v2.16.24: identidade (RG) — eContador valida Size(0,15).
     # Caso real (19/06/2026): HTTP 422 javax.validation.constraints.Size em
     # /data/attributes/identidade — Claude extraiu "5.336.639" com pontos
