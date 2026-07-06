@@ -156,6 +156,19 @@ SITIO NOVO DO TOCANTINS - TO" e "SEXO M". Você extraiu município
 não consegue inventar (não dá pra chutar gênero). **Sempre inclua os dois
 relationships** quando extrair pessoa.
 
+⚠️ **Caso real (ELIAS DE LIMA CORREIA, 2026-07-06)**: MESMO ERRO REPETIDO.
+RG tinha campo "Sexo/Sex: M" e "Naturalidade: PALMEIRÓPOLIS/TO". Você
+extraiu `municipionascimento="PALMEIROPOLIS"` mas omitiu `sexo` e
+`naturalidade` de novo. NÃO REPITA. Toda vez que extrair
+`municipionascimento`, VOCÊ TAMBÉM DEVE incluir `naturalidade` com o id
+da UF logo em seguida no RG/ficha. E procurar o campo "Sexo/Sex" que
+FICA AO LADO DA FOTO no RG modelo brasileiro — SEMPRE está lá, letra M ou F.
+
+**REGRA DE OURO EXPLÍCITA**: Se `municipionascimento` está preenchido, é
+IMPOSSÍVEL que `naturalidade` fique vazia — a UF SEMPRE está a poucos
+caracteres do nome da cidade no RG (formato "CIDADE / UF" ou "CIDADE - UF").
+Extrai as duas coisas juntas ou omite as duas.
+
 ### 3.2 Endereço
 
 ⚠️ **SEMPRE estruture em campos separados** — `cep`, `rua`, `numero`,
