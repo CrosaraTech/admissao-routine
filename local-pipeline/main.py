@@ -1248,6 +1248,84 @@ def processar_admissao(
     # mesma lógica ANTES de gerar a pendência: se o único motivo bloqueante
     # é auto-resolvível pela flag, promove _dados_parciais e segue normal.
     if resposta_claude.get("_pendente"):
+        # v2.16.52: aplicar defaults do perfil ao _dados_parciais RAIZ ANTES
+        # de decidir pendencia. Cobre o caso ELIAS/EMERSON onde Claude marca
+        # _pendente na RAIZ (nao em bloco) por SALARIO_AUSENTE e o fix da
+        # v2.16.51 nao alcanca (esse rodava so em _processar_um_bloco).
+        try:
+            import perfis_remetente as _pr_raiz
+            _rem = (metadados or {}).get("remetente", "")
+            if _rem:
+                _cnpj_r = (
+                    resposta_claude.get("cnpj_empresa")
+                    or (resposta_claude.get("_dados_parciais") or {}).get("cnpj_empresa")
+                    or ""
+                )
+                # Wrapper: aplicar_defaults_do_perfil espera bloco JSON:API.
+                # Construimos "shadow" bloco com dp -> attrs pra reusar logica.
+                dp_raiz = resposta_claude.get("_dados_parciais") or {}
+                _shadow = {
+                    "_dados_parciais": dp_raiz,
+                    "data": {"attributes": {}, "relationships": {}},
+                }
+                _pre = _pr_raiz.aplicar_defaults_do_perfil(_shadow, _rem, _cnpj_r)
+                if _pre and any(p.startswith("salario=") for p in _pre):
+                    # Propaga salario aplicado pro _dados_parciais raiz
+                    sal_novo = ((_shadow.get("data") or {}).get("attributes")
+                                or {}).get("salario")
+                    if sal_novo:
+                        dp_raiz["salario"] = sal_novo
+                        resposta_claude["_dados_parciais"] = dp_raiz
+                    # Remove SALARIO_AUSENTE dos codigos
+                    _cods_raw = resposta_claude.get("_motivos_codigos") or []
+                    if isinstance(_cods_raw, list):
+                        resposta_claude["_motivos_codigos"] = [
+                            c for c in _cods_raw
+                            if str(c).upper().strip() != "SALARIO_AUSENTE"
+                        ]
+                    if str(resposta_claude.get("_motivo_codigo") or ""
+                           ).upper().strip() == "SALARIO_AUSENTE":
+                        resposta_claude.pop("_motivo_codigo", None)
+                        _rest = resposta_claude.get("_motivos_codigos") or []
+                        if _rest:
+                            resposta_claude["_motivo_codigo"] = _rest[0]
+                    log.info(
+                        f"   ✅ Raiz-pendente: SALARIO_AUSENTE resolvido via perfil "
+                        f"manual de {_rem} (R$ {sal_novo}) — verificando se sobrou bloqueante"
+                    )
+                    # Se nao sobrou nenhum codigo, desmarca _pendente
+                    _todos_raiz = set()
+                    if resposta_claude.get("_motivo_codigo"):
+                        _todos_raiz.add(
+                            str(resposta_claude["_motivo_codigo"]).upper().strip()
+                        )
+                    for _c in (resposta_claude.get("_motivos_codigos") or []):
+                        _todos_raiz.add(str(_c).upper().strip())
+                    _todos_raiz.discard("")
+                    if not _todos_raiz:
+                        log.info(
+                            "   ✅ Sem mais codigos bloqueantes — promovendo "
+                            "dados parciais e seguindo fluxo normal"
+                        )
+                        # Promove dp (atualizado com salario) -> admissoes[]
+                        # espelhando o que AUTO_RAIZ faz mais abaixo.
+                        if dp_raiz and not resposta_claude.get("admissoes"):
+                            resposta_claude["admissoes"] = [{
+                                "data": {
+                                    "attributes":
+                                    _payload_parcial_de_dados(dp_raiz)["data"]["attributes"]
+                                }
+                            }]
+                        resposta_claude.pop("_pendente", None)
+                        resposta_claude.pop("_motivo", None)
+                        resposta_claude.pop("_motivo_codigo", None)
+                        resposta_claude.pop("_motivos_codigos", None)
+        except Exception as _e:
+            log.warning(
+                f"   ⚠ Falha aplicando perfil no raiz-pendente: "
+                f"{type(_e).__name__}: {_e}"
+            )
+
         cod_raiz = str(resposta_claude.get("_motivo_codigo") or "").upper().strip()
         cods_raiz_extras = resposta_claude.get("_motivos_codigos") or []
         if isinstance(cods_raiz_extras, list):
