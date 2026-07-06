@@ -1023,6 +1023,11 @@ def cbo_listar():
     from funcao import _norm
     q = (request.args.get("q") or "").strip()
     apenas_x = request.args.get("x") == "on"
+    # v2.16.48: filtro por coluna especifica. 'todos' (default) combina
+    # nome/cbo/funcao_id/codigo. Individual: pesquisa so na coluna.
+    coluna = (request.args.get("col") or "todos").lower()
+    if coluna not in ("todos", "nome_cargo", "cbo", "funcao_id", "codigo"):
+        coluna = "todos"
     try:
         planilha = carregar_planilha(PLANILHA_CBO)
     except Exception as e:
@@ -1036,14 +1041,24 @@ def cbo_listar():
         itens = [it for it in itens if it.get("usar")]
     if q:
         qn = _norm(q)
-        # Match por nome_cargo (substring) OU cbo exato
-        d = re.sub(r"\D", "", q)
-        itens = [
-            it for it in itens
-            if qn in _norm(it.get("nome_cargo", ""))
-            or (d and d == re.sub(r"\D", "", str(it.get("cbo", ""))))
-            or (d and d == str(it.get("funcao_id", "")))
-        ]
+        qd = re.sub(r"\D", "", q)  # digitos do termo
+        def _match(it):
+            if coluna == "nome_cargo":
+                return qn in _norm(it.get("nome_cargo", ""))
+            if coluna == "cbo":
+                return bool(qd) and qd in re.sub(r"\D", "", str(it.get("cbo", "")))
+            if coluna == "funcao_id":
+                return bool(qd) and qd == str(it.get("funcao_id", ""))
+            if coluna == "codigo":
+                return qn in _norm(str(it.get("codigo", "")))
+            # todos: combina tudo
+            return (
+                qn in _norm(it.get("nome_cargo", ""))
+                or (qd and qd in re.sub(r"\D", "", str(it.get("cbo", ""))))
+                or (qd and qd == str(it.get("funcao_id", "")))
+                or qn in _norm(str(it.get("codigo", "")))
+            )
+        itens = [it for it in itens if _match(it)]
     # Limita render pra nao travar navegador em 9k linhas sem filtro
     max_render = 200
     truncado = len(itens) > max_render
@@ -1052,6 +1067,7 @@ def cbo_listar():
         "cbo.html",
         itens=itens,
         q=q,
+        coluna=coluna,
         apenas_x=apenas_x,
         total_all=total_all,
         total_x=total_x,

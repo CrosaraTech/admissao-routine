@@ -15,8 +15,15 @@
 <div class="card">
   <h2 class="card-title">Buscar cargo</h2>
   <form method="GET" action="{{ url_for('cbo_listar') }}" style="display:flex; gap:8px; align-items:center; flex-wrap:wrap">
+    <select name="col" style="padding:8px 12px; min-width:130px">
+      <option value="todos"       {% if coluna == 'todos' %}selected{% endif %}>Todos os campos</option>
+      <option value="nome_cargo"  {% if coluna == 'nome_cargo' %}selected{% endif %}>Nome do cargo</option>
+      <option value="cbo"         {% if coluna == 'cbo' %}selected{% endif %}>CBO</option>
+      <option value="funcao_id"   {% if coluna == 'funcao_id' %}selected{% endif %}>funcao_id</option>
+      <option value="codigo"      {% if coluna == 'codigo' %}selected{% endif %}>Código interno</option>
+    </select>
     <input type="search" name="q" value="{{ q }}"
-           placeholder="Nome do cargo, CBO ou funcao_id..."
+           placeholder="Digite o termo..."
            style="flex:1; min-width:260px; padding:8px 12px"
            autofocus>
     <label style="display:flex; gap:6px; align-items:center">
@@ -24,7 +31,7 @@
       <span class="small">Só X-marcados</span>
     </label>
     <button type="submit" class="btn btn-primary btn-sm">Buscar</button>
-    {% if q or apenas_x %}
+    {% if q or apenas_x or coluna != 'todos' %}
       <a href="{{ url_for('cbo_listar') }}" class="btn btn-ghost btn-sm">Limpar</a>
     {% endif %}
   </form>
@@ -58,7 +65,7 @@
               <form method="POST" action="{{ url_for('cbo_toggle_x') }}" style="display:inline">
                 <input type="hidden" name="idx" value="{{ it._idx }}">
                 <input type="hidden" name="redir"
-                       value="{{ url_for('cbo_listar', q=q, x='on' if apenas_x else '') }}">
+                       value="{{ url_for('cbo_listar', q=q, col=coluna, x='on' if apenas_x else '') }}">
                 {% if it.usar %}
                   <button type="submit" class="btn btn-primary btn-xs"
                           title="Desmarcar (nao usar)">X</button>
