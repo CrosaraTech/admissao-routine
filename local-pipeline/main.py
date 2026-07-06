@@ -1280,20 +1280,44 @@ def processar_admissao(
         motivo = resposta_claude.get("_motivo") or "Dados insuficientes"
         dp = resposta_claude.get("_dados_parciais") or {}
 
-        # Extrai o que dá pra dar contexto na planilha
-        nome_extraido = next(
-            (str(dp.get(k)) for k in ("nome", "nome_completo", "funcionario")
-             if dp.get(k)),
-            None,
+        # v2.16.50: extracao case-insensitive + fallback nos varios formatos que
+        # Claude usa. Caso real EMERSON (2026-07-06): email tinha 'Nome: EMERSON
+        # COSTA DOS SANTOS' explicito mas UI mostrou '(nome não extraído)'.
+        # Provavelmente Claude retornou chave 'Nome' (case) ou 'candidato' ou
+        # dentro de estrutura aninhada.
+        def _get_ci(d: dict, *chaves):
+            """Case-insensitive get; retorna primeiro valor nao-vazio."""
+            if not isinstance(d, dict):
+                return None
+            keys_lower = {str(k).lower(): k for k in d.keys()}
+            for c in chaves:
+                real = keys_lower.get(c.lower())
+                if real and d.get(real):
+                    return str(d[real]).strip()
+            return None
+
+        nome_extraido = _get_ci(
+            dp,
+            "nome", "nome_completo", "nomecompleto", "funcionario",
+            "candidato", "nome_candidato", "nome_funcionario",
+            "colaborador", "nome_colaborador",
         )
-        razao_extraida = next(
-            (str(dp.get(k)) for k in (
-                "razao_social_empresa", "razao_social", "empresa", "nome_empresa",
-            ) if dp.get(k)),
-            None,
+        # v2.16.50: fallback — se Claude estruturou como admissoes[] em vez
+        # de _dados_parciais mas ainda marcou _pendente, extrai do bloco.
+        if not nome_extraido:
+            blocos = resposta_claude.get("admissoes") or []
+            if blocos and isinstance(blocos, list):
+                _b0 = blocos[0] or {}
+                _at = ((_b0.get("data") or {}).get("attributes") or {})
+                if _at.get("nome"):
+                    nome_extraido = str(_at["nome"]).strip()
+        razao_extraida = _get_ci(
+            dp,
+            "razao_social_empresa", "razao_social", "razaosocial",
+            "empresa", "nome_empresa", "nomeempresa",
         )
         cnpj_extraido = (
-            dp.get("cnpj_empresa")
+            _get_ci(dp, "cnpj_empresa", "cnpj", "cnpjempresa")
             or resposta_claude.get("cnpj_empresa")
             or ""
         )
@@ -1312,6 +1336,13 @@ def processar_admissao(
         # mapeadas pros nomes da API JSON:API) e grava.
         try:
             payload_parcial = _payload_parcial_de_dados(dp)
+            # v2.16.50: fallback — se nao pegou nome direto do dp, tenta do
+            # payload normalizado (que mapeou chaves PT-BR pra API JSON:API).
+            if not nome_extraido:
+                _attrs = ((payload_parcial.get("data") or {}).get("attributes")
+                          or {})
+                if _attrs.get("nome"):
+                    nome_extraido = str(_attrs["nome"]).strip()
             resolucao_parcial = {
                 "indice": 1,
                 "total": 1,
@@ -1343,6 +1374,7 @@ def processar_admissao(
 
         resultado_pendente = {
             "indice": 1,
+            # nome_extraido pode ter sido atualizado do payload_parcial acima
             "nome": nome_extraido or "(nome não extraído)",
             "ok": False,
             "interno": False,  # vai pro cliente — falta info do lado dele
