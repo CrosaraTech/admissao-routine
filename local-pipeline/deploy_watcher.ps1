@@ -52,12 +52,20 @@ Write-Log "Deploy watcher iniciado em $RepoPath (intervalo=${IntervalSec}s)"
 
 while ($true) {
     try {
-        # Pega HEAD atual
-        $local = (git rev-parse HEAD 2>&1).Trim()
+        # Pega HEAD atual — v2.16.57: 2>&1 pode devolver ErrorRecord;
+        # forcar string via [string] antes de Trim() pra nao explodir.
+        $local = ([string](git rev-parse HEAD 2>&1)).Trim()
 
         # Busca remoto sem merge
         git fetch --quiet origin main 2>&1 | Out-Null
-        $remote = (git rev-parse origin/main 2>&1).Trim()
+        $remote = ([string](git rev-parse origin/main 2>&1)).Trim()
+
+        # Se qualquer um falhou (nao virou hash 40 chars), pula ciclo
+        if ($local.Length -lt 7 -or $remote.Length -lt 7) {
+            Write-Log "SKIP: rev-parse falhou (local=$local remote=$remote). Tentando de novo no proximo ciclo."
+            Start-Sleep -Seconds $IntervalSec
+            continue
+        }
 
         if ($local -ne $remote) {
             Write-Log "NOVO COMMIT detectado. Local=$($local.Substring(0,7)) Remote=$($remote.Substring(0,7))"
