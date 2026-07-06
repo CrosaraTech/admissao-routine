@@ -282,65 +282,49 @@
         {# v2.16.53: campos de rel obrigatorios (Sexo, Naturalidade UF,
            Estado Civil, Escolaridade). Preenche quando Claude nao extraiu
            e defaults automaticos nao cobrem. #}
+        {# v2.16.56: pre-preenche selects com ids que Claude/pipeline ja
+           extrairam (rels_ids). Se falta, atributo selected fica na opcao
+           "(vazio)" que sinaliza campo faltando. #}
+        {% set r_sexo = rels_ids.get('sexo', '') %}
+        {% set r_ec   = rels_ids.get('estadocivil', '') %}
+        {% set r_esc  = rels_ids.get('escolaridade', '') %}
+        {% set r_nat  = rels_ids.get('naturalidade', '') %}
         <div class="form-row" style="margin-top:12px">
           <div class="form-group">
-            <label for="rel_sexo">Sexo</label>
+            <label for="rel_sexo">Sexo {% if not r_sexo %}<span class="badge badge-falha" style="font-size:9px">falta</span>{% endif %}</label>
             <select id="rel_sexo" name="rel_sexo">
-              <option value="">(usar default se vazio)</option>
-              <option value="1">Masculino</option>
-              <option value="2">Feminino</option>
+              <option value="" {% if not r_sexo %}selected{% endif %}>(usar default se vazio)</option>
+              <option value="1" {% if r_sexo == '1' %}selected{% endif %}>Masculino</option>
+              <option value="2" {% if r_sexo == '2' %}selected{% endif %}>Feminino</option>
             </select>
           </div>
           <div class="form-group">
-            <label for="rel_estadocivil">Estado Civil</label>
+            <label for="rel_estadocivil">Estado Civil {% if not r_ec %}<span class="badge badge-falha" style="font-size:9px">falta</span>{% endif %}</label>
             <select id="rel_estadocivil" name="rel_estadocivil">
-              <option value="">(usar Solteiro)</option>
-              <option value="1">Solteiro</option>
-              <option value="2">Casado</option>
-              <option value="3">Divorciado</option>
-              <option value="4">Viúvo</option>
-              <option value="5">União estável</option>
-              <option value="6">Separado</option>
+              <option value="" {% if not r_ec %}selected{% endif %}>(usar Solteiro)</option>
+              {% for id_,lbl in [('1','Solteiro'),('2','Casado'),('3','Divorciado'),('4','Viúvo'),('5','União estável'),('6','Separado')] %}
+                <option value="{{ id_ }}" {% if r_ec == id_ %}selected{% endif %}>{{ lbl }}</option>
+              {% endfor %}
             </select>
           </div>
           <div class="form-group">
-            <label for="rel_escolaridade">Escolaridade</label>
+            <label for="rel_escolaridade">Escolaridade {% if not r_esc %}<span class="badge badge-falha" style="font-size:9px">falta</span>{% endif %}</label>
             <select id="rel_escolaridade" name="rel_escolaridade">
-              <option value="">(usar Médio completo)</option>
-              <option value="1">Analfabeto</option>
-              <option value="2">Fundamental incompleto (até 4ª)</option>
-              <option value="3">Fundamental completo (até 4ª)</option>
-              <option value="4">Fundamental incompleto (após 4ª)</option>
-              <option value="5">Fundamental completo</option>
-              <option value="6">Médio incompleto</option>
-              <option value="7">Médio completo</option>
-              <option value="8">Superior incompleto</option>
-              <option value="9">Superior completo</option>
-              <option value="10">Especialização</option>
-              <option value="11">Mestrado</option>
-              <option value="12">Doutorado</option>
+              <option value="" {% if not r_esc %}selected{% endif %}>(usar Médio completo)</option>
+              {% for id_,lbl in [('1','Analfabeto'),('2','Fundamental incompleto (até 4ª)'),('3','Fundamental completo (até 4ª)'),('4','Fundamental incompleto (após 4ª)'),('5','Fundamental completo'),('6','Médio incompleto'),('7','Médio completo'),('8','Superior incompleto'),('9','Superior completo'),('10','Especialização'),('11','Mestrado'),('12','Doutorado')] %}
+                <option value="{{ id_ }}" {% if r_esc == id_ %}selected{% endif %}>{{ lbl }}</option>
+              {% endfor %}
             </select>
           </div>
           <div class="form-group">
-            <label for="rel_naturalidade">Naturalidade (UF de nascimento)</label>
+            <label for="rel_naturalidade">Naturalidade (UF de nascimento) {% if not r_nat %}<span class="badge badge-falha" style="font-size:9px">falta</span>{% endif %}</label>
             <select id="rel_naturalidade" name="rel_naturalidade">
-              <option value="">(usar Goiás)</option>
-              <option value="1">AC</option><option value="2">AL</option>
-              <option value="3">AM</option><option value="4">AP</option>
-              <option value="5">BA</option><option value="6">CE</option>
-              <option value="7">DF</option><option value="8">ES</option>
-              <option value="9" selected>GO</option><option value="10">MA</option>
-              <option value="11">MG</option><option value="12">MS</option>
-              <option value="13">MT</option><option value="14">PA</option>
-              <option value="15">PB</option><option value="16">PE</option>
-              <option value="17">PI</option><option value="18">PR</option>
-              <option value="19">RJ</option><option value="20">RN</option>
-              <option value="21">RO</option><option value="22">RR</option>
-              <option value="23">RS</option><option value="24">SC</option>
-              <option value="25">SE</option><option value="26">SP</option>
-              <option value="27">TO</option>
+              <option value="" {% if not r_nat %}selected{% endif %}>(usar Goiás)</option>
+              {% for id_,uf in [('1','AC'),('2','AL'),('3','AM'),('4','AP'),('5','BA'),('6','CE'),('7','DF'),('8','ES'),('9','GO'),('10','MA'),('11','MG'),('12','MS'),('13','MT'),('14','PA'),('15','PB'),('16','PE'),('17','PI'),('18','PR'),('19','RJ'),('20','RN'),('21','RO'),('22','RR'),('23','RS'),('24','SC'),('25','SE'),('26','SP'),('27','TO')] %}
+                <option value="{{ id_ }}" {% if r_nat == id_ %}selected{% endif %}>{{ uf }}</option>
+              {% endfor %}
             </select>
-            <small class="muted">Municipio de nasc {{ attrs.get('municipionascimento', '(?)') }} — escolha UF certo se nao for GO.</small>
+            <small class="muted">Municipio de nasc <strong>{{ attrs.get('municipionascimento', '(?)') }}</strong> — escolha UF certo.</small>
           </div>
         </div>
 

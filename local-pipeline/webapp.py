@@ -662,6 +662,14 @@ def pendencia_detalhe(msg_id: str, nome: str, cnpj: str):
 
     # Dados extraídos pelo Claude (pra mostrar resumo amigável)
     attrs = ((payload_doc.get("payload") or {}).get("data") or {}).get("attributes") or {}
+    # v2.16.56: expoe rels pro template pre-preencher selects (Sexo, EstadoCivil,
+    # Escolaridade, Naturalidade). Ids que Claude ja extraiu ou defaults do
+    # pipeline injetou aparecem selecionados; vazio = "falta extrair".
+    rels_raw = ((payload_doc.get("payload") or {}).get("data") or {}).get("relationships") or {}
+    rels_ids = {
+        k: str((v or {}).get("data", {}).get("id") or "")
+        for k, v in rels_raw.items()
+    }
     resolucao = payload_doc.get("resolucao") or {}
     cpf = attrs.get("cpf") or (resolucao.get("cpf") or "")
     duplicatas = []
@@ -677,6 +685,7 @@ def pendencia_detalhe(msg_id: str, nome: str, cnpj: str):
         payload_path=payload_path.name if payload_path else None,
         payload_doc=payload_doc,
         attrs=attrs,
+        rels_ids=rels_ids,
         resolucao=resolucao,
         duplicatas=duplicatas,
     )
