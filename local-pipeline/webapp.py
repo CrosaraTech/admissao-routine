@@ -1801,6 +1801,22 @@ def postar_pendencia(msg_id: str, nome: str, cnpj: str):
             log.exception("Falha registrando linha na planilha")
             aviso_planilha = " (atenção: planilha não atualizou — feche o Excel se estiver aberto)"
 
+        # v2.16.46: descarta rascunhos de resposta pendentes pra esse msg_id.
+        # Pendencia resolvida -> nao faz sentido mandar email pro cliente
+        # perguntando dado que ja foi resolvido internamente.
+        try:
+            import rascunhos_resposta as rr
+            n_desc = rr.descartar_por_msg_id(
+                msg_id,
+                operador="auto-pos-post",
+                motivo=f"pendencia resolvida via web (candidato {res.candidato_id})",
+            )
+            if n_desc > 0:
+                log.info(f"[postar via web] descartou {n_desc} rascunho(s) "
+                         f"do msg_id {msg_id[:16]}")
+        except Exception:
+            log.exception("[postar] auto-descarte rascunhos falhou (nao critico)")
+
         msg = (
             f"Já estava cadastrado: candidato {res.candidato_id}.{aviso_planilha}"
             if res.pulou else
@@ -2379,6 +2395,19 @@ def main(host: str = "0.0.0.0", port: int = 8080, debug: bool = False):
     log.info(f"  LAN:     http://{ip}:{port}")
     log.info("Pressione Ctrl+C pra parar.")
     log.info("=" * 70)
+
+    # v2.16.46: polling ligado por default no boot. Operador desliga via UI
+    # se quiser rodar so pendencias manuais. Antes ficava OFF e user tinha
+    # que abrir /configuracoes e clicar Iniciar toda vez que subia webapp.
+    try:
+        ok_pl, msg_pl = POLLING.iniciar()
+        if ok_pl:
+            log.info("[polling] Auto-iniciado no boot (v2.16.46). "
+                     "Desligue via /configuracoes se quiser.")
+        else:
+            log.info(f"[polling] Auto-inicio pulou: {msg_pl}")
+    except Exception:
+        log.exception("[polling] Falha auto-iniciando (nao critico)")
 
     if debug:
         # Dev server com reload em modo --debug

@@ -2581,6 +2581,22 @@ def _processar_um_bloco(
                     )
         except Exception as e:
             log.debug(f"   auto-aprendizado de salário padrão pulado: {type(e).__name__}: {e}")
+
+        # v2.16.46: descarta rascunhos de resposta ainda pendentes deste msg_id.
+        # Cobre caso em que pipeline reprocessa email e resolve pendencia sem
+        # operador tocar — rascunho antigo (perguntando dado ao cliente) fica
+        # sem sentido depois do POST OK.
+        try:
+            import rascunhos_resposta as _rr
+            _n = _rr.descartar_por_msg_id(
+                msg_id, operador="auto-orquestrador",
+                motivo=f"admissao resolvida (candidato {candidato_id})",
+            )
+            if _n:
+                log.info(f"   descartou {_n} rascunho(s) pendente(s) do msg_id {msg_id[:16]}")
+        except Exception as e:
+            log.debug(f"   auto-descarte rascunhos pulado: {type(e).__name__}: {e}")
+
         return {
             "_pendencia_anterior_msg_id": bloco.get("_pendencia_anterior_msg_id"),
             "indice": indice, "nome": nome, "ok": True,

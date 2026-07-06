@@ -154,6 +154,23 @@ def marcar_descartado(rid: str, operador: str = "", motivo: str = "") -> dict | 
     )
 
 
+def descartar_por_msg_id(msg_id: str, operador: str = "auto",
+                          motivo: str = "pendencia resolvida") -> int:
+    """v2.16.46: descarta em lote todos rascunhos PENDENTES vinculados a
+    um msg_id especifico. Usado apos POST /candidatos OK — se a pendencia
+    foi resolvida, o rascunho de resposta ao cliente perde razao de existir.
+    Retorna quantos foram marcados.
+    """
+    if not msg_id:
+        return 0
+    n = 0
+    for rec in listar(status=STATUS_PENDENTE):
+        if str(rec.get("msg_id", "")) == msg_id:
+            marcar_descartado(rec["id"], operador=operador, motivo=motivo)
+            n += 1
+    return n
+
+
 def listar(
     status: str | None = STATUS_PENDENTE,
     incluir_arquivados: bool = False,
