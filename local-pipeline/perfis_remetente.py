@@ -426,6 +426,86 @@ def resumo_pra_prompt(remetente: str) -> str:
 
 # ── Fase 3: aplicar defaults do perfil em um payload ────────────
 
+# v2.16.55: abreviacoes comuns de cargo que clientes usam nos emails.
+# Chave = forma abreviada; valor = forma completa. Match e feito TOKEN A TOKEN
+# no cargo — 'OP DE DESTILACAO' vira 'OPERADOR DE DESTILACAO' etc.
+_CARGO_ABREV = {
+    "OP": "OPERADOR",
+    "OPER": "OPERADOR",
+    "AUX": "AUXILIAR",
+    "ASS": "ASSISTENTE",
+    "ASST": "ASSISTENTE",
+    "ENC": "ENCARREGADO",
+    "GER": "GERENTE",
+    "SUP": "SUPERVISOR",
+    "COORD": "COORDENADOR",
+    "TEC": "TECNICO",
+    "ADM": "ADMINISTRATIVO",
+    "ADMIN": "ADMINISTRATIVO",
+    "MOT": "MOTORISTA",
+    "AJUD": "AJUDANTE",
+    "VEND": "VENDEDOR",
+    "REP": "REPOSITOR",
+    "ATEND": "ATENDENTE",
+    "PROD": "PRODUCAO",
+    "MANUT": "MANUTENCAO",
+    "DEP": "DEPOSITO",
+    "EXP": "EXPEDICAO",
+    "REC": "RECEPCIONISTA",
+    "SEC": "SECRETARIO",
+    "FIN": "FINANCEIRO",
+    "COMER": "COMERCIAL",
+}
+
+
+def _expandir_abrevs_cargo(cargo: str) -> str:
+    """v2.16.55: 'OP DE DESTILACAO' -> 'OPERADOR DE DESTILACAO'."""
+    import re as _re
+    tokens = _re.split(r"\s+", cargo.upper().strip())
+    return " ".join(_CARGO_ABREV.get(t.rstrip(".,"), t) for t in tokens)
+
+
+def _match_cargo_fuzzy(cargo_extraido: str,
+                        cargos_cadastrados: dict) -> tuple[float | None, str]:
+    """v2.16.55: procura salario_manual por cargo com 3 tentativas:
+      1. Exato (case-insensitive, ja normalizado UPPER)
+      2. Expansao de abreviacoes ('OP' -> 'OPERADOR' etc), match exato depois
+      3. Fuzzy SequenceMatcher com threshold 0.82
+
+    Retorna (valor, cargo_que_bateu) ou (None, "").
+    """
+    if not cargo_extraido or not cargos_cadastrados:
+        return None, ""
+    alvo = cargo_extraido.upper().strip()
+
+    # 1) Exato
+    if alvo in cargos_cadastrados:
+        return cargos_cadastrados[alvo], alvo
+
+    # 2) Expansao de abreviacoes
+    alvo_exp = _expandir_abrevs_cargo(alvo)
+    if alvo_exp != alvo and alvo_exp in cargos_cadastrados:
+        return cargos_cadastrados[alvo_exp], alvo_exp
+    # E o contrario: alvo original vs cargos com abrevs expandidas
+    for cadastrado, valor in cargos_cadastrados.items():
+        if _expandir_abrevs_cargo(cadastrado) == alvo_exp:
+            return valor, cadastrado
+
+    # 3) Fuzzy — compara sempre com formas expandidas
+    from difflib import SequenceMatcher
+    melhor_score, melhor_cargo, melhor_valor = 0.0, "", None
+    for cadastrado, valor in cargos_cadastrados.items():
+        cad_exp = _expandir_abrevs_cargo(cadastrado)
+        score = SequenceMatcher(None, alvo_exp, cad_exp).ratio()
+        if score > melhor_score:
+            melhor_score = score
+            melhor_cargo = cadastrado
+            melhor_valor = valor
+    if melhor_score >= 0.82:
+        return melhor_valor, melhor_cargo
+    return None, ""
+
+
 def aplicar_defaults_do_perfil(payload: dict, remetente: str,
                                 cnpj_empresa: str = "") -> list[str]:
     """Quando o pipeline detecta que um campo está faltando E o perfil do
@@ -482,13 +562,19 @@ def aplicar_defaults_do_perfil(payload: dict, remetente: str,
                         attrs.setdefault("nomecargo", cargo_atual)
                         preenchidos.append(f"nomecargo={cargo_atual!r} (dp->attrs)")
                         break
-        # 1) Manual cadastrado
+        # 1) Manual cadastrado — v2.16.55: fuzzy match + expansao de abrevs
         sal_manuais = perf.get("salarios_manuais_por_cargo") or {}
-        sal_manual = sal_manuais.get(cargo_atual)
+        sal_manual, cargo_bate = _match_cargo_fuzzy(cargo_atual, sal_manuais)
         if sal_manual and float(sal_manual) > 0:
             sal = float(sal_manual)
             attrs["salario"] = sal
-            preenchidos.append(f"salario={sal} (manual do perfil)")
+            if cargo_bate == cargo_atual:
+                preenchidos.append(f"salario={sal} (manual do perfil)")
+            else:
+                preenchidos.append(
+                    f"salario={sal} (manual do perfil, "
+                    f"match fuzzy '{cargo_atual}'≈'{cargo_bate}')"
+                )
         else:
             # 2) Fallback: média histórica, só se padrão de omissão
             omissoes = (perf.get("padroes_aprendidos") or {}).get(
