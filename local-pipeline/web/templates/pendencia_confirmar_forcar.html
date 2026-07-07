@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+
+{% block nav %}pendentes{% endblock %}
+{% block titulo %}Enviar mesmo com campos faltando?{% endblock %}
+
+{% block conteudo %}
+<div class="card reveal">
+  <div class="banner" style="background:#8a5a00; color:#fff; padding:14px 16px; border-radius:8px; margin-bottom:16px">
+    <strong>⚠ Ainda faltam campos pra postar {{ entidade.nome if entidade else 'este candidato' }}.</strong>
+  </div>
+
+  <h2 class="card-title">Campos que não foram preenchidos</h2>
+  <ul style="line-height:1.7; padding-left:20px; margin-bottom:16px">
+    {% for f in faltando %}
+      <li><strong>{{ f }}</strong></li>
+    {% endfor %}
+  </ul>
+
+  <p class="small muted mb-12">
+    Você pode <strong>enviar mesmo assim</strong> — o candidato vai pro
+    eContador com esses campos vazios e o DP completa manualmente no
+    Alterdata Desktop. Ou <strong>voltar</strong> e corrigir agora antes
+    de enviar.
+  </p>
+
+  <div style="display:flex; gap:12px; align-items:center; margin-top:20px">
+    {# Reenvia mesmo POST com forcar=on + todos os campos preservados #}
+    <form method="POST" action="{{ action }}" style="display:inline">
+      {% for k, v in form_hidden %}
+        <input type="hidden" name="{{ k }}" value="{{ v }}">
+      {% endfor %}
+      <input type="hidden" name="forcar" value="on">
+      <button type="submit" class="btn btn-primary"
+              onclick="return confirm('Enviar {{ entidade.nome if entidade else 'esta admissão' }} com campos vazios? DP vai preencher no Desktop.');">
+        ✓ Enviar mesmo assim
+      </button>
+    </form>
+
+    <a href="{{ voltar_url }}" class="btn btn-ghost">
+      ← Voltar e corrigir
+    </a>
+  </div>
+
+  <p class="small muted" style="margin-top:24px">
+    v2.16.58 — antes essa mensagem aparecia como erro seco e você tinha
+    que abrir modal escondido pra forçar. Agora é 1 clique.
+  </p>
+</div>
+{% endblock %}

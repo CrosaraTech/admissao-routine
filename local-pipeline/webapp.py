@@ -1931,10 +1931,30 @@ def postar_pendencia(msg_id: str, nome: str, cnpj: str):
                + "\n\n• ".join(soft_faltando) if soft_faltando else "")
         )
     # Soft: bloqueia normal, libera com forcar=on
+    # v2.16.58: em vez de mensagem seca, mostra pagina com botao 'Enviar
+    # mesmo assim' que resubmete form COM forcar=on preservando tudo que
+    # operador digitou. Antes: operador tinha que abrir modal escondido +
+    # digitar tudo de novo.
     if soft_faltando and not forcar_envio:
-        return _resposta_erro(
-            "Não dá pra enviar — ainda faltam:\n\n• "
-            + "\n\n• ".join(soft_faltando)
+        # Reecoa todos os campos do form (exceto forcar) em hidden inputs
+        _form_hidden = [
+            (k, v) for k, v in request.form.items()
+            if k not in ("forcar",) and v
+        ]
+        _ent_forcar = _entidade_por_chave(msg_id, nome, cnpj)
+        return render_template(
+            "pendencia_confirmar_forcar.html",
+            entidade=_ent_forcar,
+            faltando=soft_faltando,
+            form_hidden=_form_hidden,
+            action=url_for(
+                "postar_pendencia",
+                msg_id=msg_id, nome=nome, cnpj=cnpj,
+            ),
+            voltar_url=url_for(
+                "pendencia_detalhe",
+                msg_id=msg_id, nome=nome, cnpj=cnpj,
+            ),
         )
     if soft_faltando and forcar_envio:
         log.warning(
