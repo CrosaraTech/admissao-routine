@@ -993,6 +993,7 @@ def processar_arquivos_avulsos(
     api: EContadorAPI,
     planilha_cbo: list[dict],
     config: Config,
+    msg_id_forced: str | None = None,
 ) -> None:
     """Processa admissão a partir de arquivos importados manualmente pela UI.
 
@@ -1012,7 +1013,7 @@ def processar_arquivos_avulsos(
             da Maria, CNPJ 12345678000190, salário 2000")
     """
     import time
-    msg_id = f"manual_{int(time.time())}"
+    msg_id = msg_id_forced or f"manual_{int(time.time())}"
     metadados = {
         "remetente": "IMPORTACAO_MANUAL",
         "assunto": "Importação manual de arquivos",

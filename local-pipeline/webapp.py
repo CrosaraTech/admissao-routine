@@ -852,13 +852,21 @@ _IMPORTAR_MAX_BYTES = 100 * 1024 * 1024  # 100 MB total
 _IMPORTAR_EXTENSOES_OK = {".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp"}
 
 
-def _executar_importacao_em_thread(arquivos: list[dict], corpo_texto: str):
+def _executar_importacao_em_thread(arquivos: list[dict], corpo_texto: str,
+                                    msg_id_preset: str | None = None):
     """Roda processar_arquivos_avulsos numa thread (libera o request).
-    arquivos = [{filename, mime, data: bytes}, ...]"""
+    arquivos = [{filename, mime, data: bytes}, ...]
+
+    v2.16.59: aceita msg_id_preset. Se passado, injeta em IMPORTAR.resumo
+    inicial pra UI conseguir polling do status especifico.
+    """
     iniciada, motivo = IMPORTAR.marcar_iniciada()
     if not iniciada:
         log.info(f"[webapp] Importação ignorada: {motivo}")
         return
+    if msg_id_preset:
+        with IMPORTAR._lock:
+            IMPORTAR.ultimo_resumo = {"msg_id": msg_id_preset}
     try:
         import os as _os
         sys.stdin = open(_os.devnull, "r")
@@ -887,11 +895,32 @@ def _executar_importacao_em_thread(arquivos: list[dict], corpo_texto: str):
         try:
             processar_arquivos_avulsos(
                 arquivos, corpo_texto, claude, api, planilha, config,
+                msg_id_forced=msg_id_preset,
             )
         finally:
             api.close()
-        IMPORTAR.marcar_terminada(resumo={"n_arquivos": len(arquivos)})
-        log.info(f"[webapp] Importação concluída: {len(arquivos)} arquivo(s)")
+        # v2.16.59: consulta estado pos-processamento pra UI decidir tela final
+        resumo_final = {"n_arquivos": len(arquivos),
+                        "msg_id": msg_id_preset or ""}
+        if msg_id_preset:
+            try:
+                for e in dd.listar_entidades(incluir_cargo_ia=True):
+                    if e.get("msg_id") == msg_id_preset:
+                        resumo_final["nome"] = e.get("nome", "")
+                        resumo_final["empresa"] = e.get("empresa", "")
+                        resumo_final["cnpj"] = e.get("cnpj", "")
+                        resumo_final["categoria"] = e.get("categoria", "")
+                        resumo_final["procedencia"] = e.get("procedencia", "")
+                        # Extrai candidato_id da procedencia se sucesso
+                        import re as _re
+                        m = _re.search(r"candidato (\d+)", str(e.get("procedencia") or ""))
+                        if m:
+                            resumo_final["candidato_id"] = m.group(1)
+                        break
+            except Exception as _e:
+                log.warning(f"[webapp] resumo pos-importacao falhou: {_e}")
+        IMPORTAR.marcar_terminada(resumo=resumo_final)
+        log.info(f"[webapp] Importação concluída: {resumo_final}")
     except Exception as e:
         log.exception("[webapp] Falha na importação")
         IMPORTAR.marcar_terminada(erro=f"{type(e).__name__}: {e}")
@@ -941,17 +970,58 @@ def importar_post():
         return _resposta_erro("Nenhum arquivo válido pra processar.")
 
     corpo_texto = (request.form.get("corpo_texto") or "").strip()
+    # v2.16.59: gera msg_id aqui pra passar pro thread e URL de aguarde
+    import time as _t
+    msg_id_import = f"manual_{int(_t.time())}"
     t = threading.Thread(
         target=_executar_importacao_em_thread,
-        args=(arquivos, corpo_texto),
+        args=(arquivos, corpo_texto, msg_id_import),
         daemon=True,
     )
     t.start()
-    return _resposta_ok_ou_htmx(
-        f"Importação iniciada com {len(arquivos)} arquivo(s) — "
-        f"pode levar 1-2 min. Acompanhe em Pendentes/Processadas.",
-        redirect_url=url_for("importar_form"),
-    )
+    return redirect(url_for("importar_aguarde", msg_id=msg_id_import))
+
+
+@app.route("/importar/aguarde/<msg_id>", methods=["GET"])
+def importar_aguarde(msg_id: str):
+    """v2.16.59: tela de espera com polling. JS bate em /importar/status
+    a cada 1.5s. Quando rodando=False, redireciona:
+      - sucesso -> tela de confirmacao com candidato_id
+      - pendente -> pagina de resolver pendencia (form completo)
+    """
+    return render_template("importar_aguarde.html", msg_id=msg_id)
+
+
+@app.route("/importar/status/<msg_id>", methods=["GET"])
+def importar_status(msg_id: str):
+    """v2.16.59: JSON status pra polling. Frontend decide redirect."""
+    snap = IMPORTAR.snapshot()
+    resumo = snap.get("ultimo_resumo") or {}
+    if snap["rodando"]:
+        return {"rodando": True, "msg_id": msg_id}
+    # Terminado
+    out = {"rodando": False, "msg_id": msg_id, "erro": snap.get("erro")}
+    if resumo.get("msg_id") == msg_id:
+        out["nome"] = resumo.get("nome", "")
+        out["empresa"] = resumo.get("empresa", "")
+        out["cnpj"] = resumo.get("cnpj", "")
+        out["categoria"] = resumo.get("categoria", "")
+        out["candidato_id"] = resumo.get("candidato_id", "")
+        out["procedencia"] = resumo.get("procedencia", "")
+        # Decide URL final
+        cat = resumo.get("categoria", "")
+        if cat == "processada":
+            out["redirect"] = url_for("processadas")
+        elif cat and cat != "processada":
+            # Pendencia (cliente/interna/falha) -> tela de resolver
+            from urllib.parse import quote
+            out["redirect"] = url_for(
+                "pendencia_detalhe",
+                msg_id=msg_id,
+                nome=resumo.get("nome") or "(nome-nao-extraido)",
+                cnpj=resumo.get("cnpj") or "0",
+            )
+    return out
 
 
 # ── Corrigir CNPJ do email (override) ────────────────────────────

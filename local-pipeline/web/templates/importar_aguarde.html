@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% block nav %}importar{% endblock %}
+{% block titulo %}Processando importação...{% endblock %}
+
+{% block conteudo %}
+<div class="card reveal" style="text-align:center; padding:40px 20px">
+  <div id="fase-rodando">
+    <div class="spinner" style="width:48px; height:48px; margin:0 auto 20px; border-width:4px"></div>
+    <h2 class="card-title" style="margin-bottom:8px">Processando arquivos...</h2>
+    <p class="muted">Claude está lendo os documentos. Costuma levar 30-90s.</p>
+    <p class="small muted" style="margin-top:20px">msg_id: <code>{{ msg_id }}</code></p>
+  </div>
+
+  <div id="fase-sucesso" style="display:none">
+    <div style="font-size:64px; margin-bottom:12px">✅</div>
+    <h2 class="card-title" style="margin-bottom:16px">Candidato cadastrado!</h2>
+    <div class="grid-attrs" style="text-align:left; max-width:520px; margin:0 auto 20px">
+      <div class="attr"><span class="attr-label">Nome</span><span class="attr-value" id="s-nome">—</span></div>
+      <div class="attr"><span class="attr-label">Empresa</span><span class="attr-value" id="s-empresa">—</span></div>
+      <div class="attr"><span class="attr-label">Candidato ID</span><span class="attr-value" id="s-id">—</span></div>
+    </div>
+    <div style="display:flex; gap:12px; justify-content:center">
+      <a href="{{ url_for('importar_form') }}" class="btn btn-primary">Importar outro</a>
+      <a href="{{ url_for('processadas') }}" class="btn btn-ghost">Ver processadas</a>
+    </div>
+  </div>
+
+  <div id="fase-pendencia" style="display:none">
+    <div style="font-size:64px; margin-bottom:12px">⚠</div>
+    <h2 class="card-title" style="margin-bottom:16px">Falta preencher campos</h2>
+    <p class="muted" id="p-motivo" style="margin-bottom:20px">—</p>
+    <div style="display:flex; gap:12px; justify-content:center">
+      <a href="#" id="p-resolver" class="btn btn-primary">Preencher campos faltantes</a>
+      <a href="{{ url_for('importar_form') }}" class="btn btn-ghost">Cancelar</a>
+    </div>
+  </div>
+
+  <div id="fase-erro" style="display:none">
+    <div style="font-size:64px; margin-bottom:12px">❌</div>
+    <h2 class="card-title" style="margin-bottom:16px">Falhou</h2>
+    <p class="muted" id="e-msg" style="margin-bottom:20px; word-break:break-word">—</p>
+    <a href="{{ url_for('importar_form') }}" class="btn btn-primary">Tentar novamente</a>
+  </div>
+</div>
+
+<script>
+  const msgId = {{ msg_id|tojson }};
+  const statusUrl = "{{ url_for('importar_status', msg_id='__') }}".replace('__', msgId);
+
+  function mostrarFase(nome) {
+    document.getElementById('fase-rodando').style.display = 'none';
+    document.getElementById('fase-sucesso').style.display = 'none';
+    document.getElementById('fase-pendencia').style.display = 'none';
+    document.getElementById('fase-erro').style.display = 'none';
+    document.getElementById('fase-' + nome).style.display = 'block';
+  }
+
+  async function poll() {
+    try {
+      const r = await fetch(statusUrl);
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const d = await r.json();
+      if (d.rodando) {
+        setTimeout(poll, 1500);
+        return;
+      }
+      // Terminado
+      if (d.erro) {
+        document.getElementById('e-msg').textContent = d.erro;
+        mostrarFase('erro');
+        return;
+      }
+      if (d.categoria === 'processada') {
+        document.getElementById('s-nome').textContent = d.nome || '—';
+        document.getElementById('s-empresa').textContent = d.empresa || '—';
+        document.getElementById('s-id').textContent = d.candidato_id || '—';
+        mostrarFase('sucesso');
+      } else if (d.categoria) {
+        document.getElementById('p-motivo').textContent = d.procedencia || 'Faltam informações pra cadastrar';
+        document.getElementById('p-resolver').href = d.redirect || '{{ url_for("pendentes") }}';
+        mostrarFase('pendencia');
+      } else {
+        // Sem categoria mas sem erro — provavelmente sumiu do estado, redireciona pra pendentes
+        window.location.href = '{{ url_for("pendentes") }}';
+      }
+    } catch (e) {
+      document.getElementById('e-msg').textContent = 'Erro no polling: ' + e.message;
+      mostrarFase('erro');
+    }
+  }
+  setTimeout(poll, 1000);
+</script>
+{% endblock %}
