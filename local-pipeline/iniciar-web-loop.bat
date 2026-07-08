@@ -19,7 +19,11 @@ REM (que morria em loop). Novo fluxo: cada vez que webapp cai/eh morta,
 REM proximo start puxa versao mais recente do repo antes de rodar.
 REM Redireciona output pra log dedicado — nao polui janela + serve como
 REM auditoria de deploys.
-echo [%date% %time%] git pull... >> deploy_pull.log
+echo [%date% %time%] git reset+pull... >> deploy_pull.log
+REM v2.16.61 fix: reset --hard descarta working copy conflitante (ex: bat
+REM editado diretamente via Y: SMB sem commit). Sem isso, pull --ff-only
+REM aborta com "local changes would be overwritten by merge".
+git reset --hard >> deploy_pull.log 2>&1
 git pull --ff-only >> deploy_pull.log 2>&1
 echo. >> deploy_pull.log
 
