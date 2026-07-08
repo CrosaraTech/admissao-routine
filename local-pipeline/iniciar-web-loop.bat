@@ -13,6 +13,16 @@ echo.
 echo ============================================================
 echo [%date% %time%] Iniciando AdmitER webapp...
 echo ============================================================
+
+REM v2.16.61: git pull antes de subir webapp. Substitui deploy_watcher.ps1
+REM (que morria em loop). Novo fluxo: cada vez que webapp cai/eh morta,
+REM proximo start puxa versao mais recente do repo antes de rodar.
+REM Redireciona output pra log dedicado — nao polui janela + serve como
+REM auditoria de deploys.
+echo [%date% %time%] git pull... >> deploy_pull.log
+git pull --ff-only >> deploy_pull.log 2>&1
+echo. >> deploy_pull.log
+
 REM Path absoluto obrigatorio — Windows grava CommandLine literal no WMI.
 REM Se lancar com caminho relativo (.\.venv...), Kill-WebappPython do
 REM deploy_watcher.ps1 nao consegue casar contra $RepoPath e nunca mata
@@ -21,5 +31,5 @@ REM o processo -> auto-deploy silenciosamente nao funciona.
 
 echo.
 echo [%date% %time%] Webapp encerrou (exit=%errorlevel%). Reiniciando em 3s...
-timeout /t 3 /nobreak >nul
+ping -n 4 127.0.0.1 >nul
 goto LOOP
