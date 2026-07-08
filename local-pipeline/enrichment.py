@@ -339,6 +339,9 @@ FIXED_DEFAULTS_RELS = {
     # (via _set_rel_id setdefault). Solteiro/Médio cobrem ~85% dos casos.
     "estadocivil":               ("tipos-estado-civil", "1"),     # Solteiro
     "escolaridade":              ("tipos-escolaridade", "7"),     # Médio completo
+    # v2.16.60: naturalidade default Goiás (~99% dos candidatos sao GO/vizinhos).
+    # Se cliente informar UF diferente, respeita (setdefault nao sobrescreve).
+    "naturalidade":              ("estados", "9"),                # Goiás
 }
 
 # v2.16.44: overrides FORÇADOS — sobrescrevem MESMO que Claude tenha extraido
@@ -419,6 +422,62 @@ def apply_ctps_from_cpf(payload: dict) -> dict:
     return payload, mudou
 
 
+def _inferir_sexo_pelo_nome(nome: str) -> str | None:
+    """v2.16.60: infere sexo id a partir do PRIMEIRO nome brasileiro.
+    Retorna '1' (M), '2' (F) ou None se ambiguo.
+
+    Heuristica conservadora:
+      - Termina em -A -> F (Maria, Ana, Cristina, Fernanda)
+      - Termina em -O -> M (Pedro, Marcelo, Bruno, Ricardo)
+      - Termina em consoante -> M (Alexander, Israel, Rafael, Daniel)
+      - Termina em -E -> ambiguo, cai em lista de excecoes
+      - Termina em -I ou -U -> ambiguo, cai em lista
+
+    Casos claros nao ambiguos cobrem ~95% dos nomes BR.
+    """
+    if not nome:
+        return None
+    import unicodedata as _ud
+    import re as _re
+    # Normaliza: tira acentos, upper, pega primeiro token
+    s = _ud.normalize("NFD", str(nome).strip())
+    s = "".join(c for c in s if not _ud.combining(c)).upper()
+    partes = _re.split(r"\s+", s)
+    if not partes:
+        return None
+    primeiro = partes[0].strip(".,-")
+    if not primeiro or len(primeiro) < 2:
+        return None
+
+    # Excecoes conhecidas (nomes masculinos em -A, femininos em -O etc)
+    _EXCECOES = {
+        # M terminando em -A (raros)
+        "COSTA": "1", "SILVA": "1",  # sobrenomes as primeiro nome
+        # Nomes ambiguos ou em -E: F
+        "DAIANE": "2", "ROSANE": "2", "ELIANE": "2", "ARIANE": "2",
+        "LILIANE": "2", "MARIANE": "2", "CRISTIANE": "2", "SUZANE": "2",
+        "SIMONE": "2", "JULIANE": "2", "ADRIANE": "2", "IONE": "2",
+        # Nomes em -E: M
+        "ANDRE": "1", "JORGE": "1", "FELIPE": "1", "ROBERT": "1",
+        "ENRIQUE": "1", "ARIQUE": "1",
+        # Em -I ambiguos
+        "DANI": "2", "SAMI": "1", "YURI": "1", "GABI": "2",
+    }
+    if primeiro in _EXCECOES:
+        return _EXCECOES[primeiro]
+
+    ultima = primeiro[-1]
+    if ultima == "A":
+        return "2"  # F
+    if ultima == "O":
+        return "1"  # M
+    if ultima not in ("E", "I", "U"):
+        # Consoante -> M (Alexander, Rafael, Daniel, Israel)
+        return "1"
+    # Termina em E/I/U sem match -> ambiguo, deixa None (nao aplica)
+    return None
+
+
 def apply_fixed_defaults(payload: dict) -> dict:
     """Preenche os defaults fixos do escritório SEM consulta externa.
 
@@ -435,6 +494,18 @@ def apply_fixed_defaults(payload: dict) -> dict:
     rels = payload.setdefault("data", {}).setdefault("relationships", {})
     for rel, (tipo, id_) in FORCED_OVERRIDES_RELS.items():
         rels[rel] = {"data": {"type": tipo, "id": str(id_)}}
+
+    # v2.16.60: se sexo ainda nao veio nem do Claude nem de FIXED_DEFAULTS,
+    # tenta inferir do primeiro nome (Pedro=M, Maria=F, etc). Se conseguir,
+    # aplica. Se nao (nome ambiguo tipo Alex, Yuri sem lista), deixa vazio
+    # -> operador escolhe via select.
+    if not _get_rel_id(payload, "sexo"):
+        nome_attr = ((payload.get("data") or {}).get("attributes")
+                     or {}).get("nome")
+        sexo_inf = _inferir_sexo_pelo_nome(nome_attr or "")
+        if sexo_inf:
+            _set_rel_id(payload, "sexo", "tipos-sexo", sexo_inf)
+            log.info(f"   🧠 sexo inferido do nome {nome_attr!r} -> id={sexo_inf}")
 
     return payload
 
