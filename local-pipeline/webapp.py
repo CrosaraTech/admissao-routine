@@ -2544,6 +2544,157 @@ def api_pendentes():
     return jsonify({"total": len(pend), "items": pend})
 
 
+# ── /debug — endpoints de inspeção pra dev (v2.16.61) ───────────
+# Alternativa ao SMB/SSH pra ler estado runtime do servidor sem depender
+# de shares de rede. Auth por whitelist RFC1918 (só LAN) — se algum dia
+# for exposto externamente (ex: Cloudflare Tunnel), TROCAR pra token.
+
+def _cliente_lan_permitido() -> bool:
+    """v2.16.61: aceita apenas requests de RFC1918 (10./172.16-31./192.168.)
+    ou localhost. Bloqueia acesso externo mesmo se webapp for exposta."""
+    import ipaddress as _ip
+    addr = request.remote_addr or ""
+    try:
+        ip = _ip.ip_address(addr)
+    except ValueError:
+        return False
+    return ip.is_private or ip.is_loopback
+
+
+def _debug_deny():
+    return jsonify({"erro": "acesso negado — apenas LAN privada"}), 403
+
+
+@app.route("/debug/log")
+def debug_log():
+    """v2.16.61: retorna ultimas N entradas do LOG_BUFFER (buffer em memoria
+    que ja alimenta a aba Atividade). Params: tail (default 200), nivel
+    (INFO/WARNING/ERROR)."""
+    if not _cliente_lan_permitido():
+        return _debug_deny()
+    tail = min(int(request.args.get("tail") or 200), 500)
+    nivel = (request.args.get("nivel") or "").upper().strip()
+    itens = LOG_BUFFER.snapshot(ultimas=tail)
+    if nivel:
+        itens = [i for i in itens if i.get("nivel") == nivel]
+    return jsonify({"total": len(itens), "items": itens})
+
+
+@app.route("/debug/payloads")
+def debug_payloads():
+    """v2.16.61: lista ultimos payloads/. Params: limit (default 30)."""
+    if not _cliente_lan_permitido():
+        return _debug_deny()
+    limit = min(int(request.args.get("limit") or 30), 100)
+    from pathlib import Path as _P
+    dir_ = _P("payloads")
+    if not dir_.exists():
+        return jsonify({"total": 0, "items": []})
+    arqs = sorted(dir_.glob("*.json"),
+                   key=lambda p: p.stat().st_mtime, reverse=True)[:limit]
+    items = []
+    for a in arqs:
+        try:
+            st = a.stat()
+            items.append({
+                "filename": a.name,
+                "size_bytes": st.st_size,
+                "modificado_em": datetime.fromtimestamp(st.st_mtime).isoformat(timespec="seconds"),
+            })
+        except Exception:
+            pass
+    return jsonify({"total": len(items), "items": items})
+
+
+@app.route("/debug/payload/<path:filename>")
+def debug_payload_get(filename):
+    """v2.16.61: retorna payload completo por filename (nome do arquivo em
+    payloads/). Bloqueia path traversal."""
+    if not _cliente_lan_permitido():
+        return _debug_deny()
+    import re as _re
+    from pathlib import Path as _P
+    if not _re.match(r"^[\w\-.]+\.json$", filename):
+        return jsonify({"erro": "filename invalido"}), 400
+    p = _P("payloads") / filename
+    if not p.exists():
+        return jsonify({"erro": "nao encontrado"}), 404
+    try:
+        return jsonify(json.loads(p.read_text(encoding="utf-8")))
+    except Exception as e:
+        return jsonify({"erro": f"{type(e).__name__}: {e}"}), 500
+
+
+@app.route("/debug/perfil/<path:remetente>")
+def debug_perfil(remetente):
+    """v2.16.61: perfil completo do remetente (JSON)."""
+    if not _cliente_lan_permitido():
+        return _debug_deny()
+    try:
+        import perfis_remetente as pr
+        perf = pr.perfil_de(remetente, consolidar_se_faltar=False)
+        if not perf:
+            return jsonify({"erro": "perfil nao encontrado"}), 404
+        return jsonify(perf)
+    except Exception as e:
+        return jsonify({"erro": f"{type(e).__name__}: {e}"}), 500
+
+
+@app.route("/debug/entidades")
+def debug_entidades():
+    """v2.16.61: lista todas admissoes (planilha admissoes.xlsx). Params:
+    limit (default 100), categoria (pendente_cliente, processada, etc)."""
+    if not _cliente_lan_permitido():
+        return _debug_deny()
+    limit = min(int(request.args.get("limit") or 100), 500)
+    cat = (request.args.get("categoria") or "").strip()
+    todas = dd.listar_entidades(incluir_cargo_ia=True)
+    if cat:
+        todas = [e for e in todas if e.get("categoria") == cat]
+    return jsonify({"total": len(todas), "items": todas[-limit:]})
+
+
+@app.route("/debug/rascunhos")
+def debug_rascunhos():
+    """v2.16.61: lista rascunhos por status (default: pendente)."""
+    if not _cliente_lan_permitido():
+        return _debug_deny()
+    status = request.args.get("status") or "pendente"
+    try:
+        import rascunhos_resposta as rr
+        recs = rr.listar(
+            status=status if status != "all" else None,
+            incluir_arquivados=True,
+        )
+        return jsonify({"total": len(recs), "items": recs})
+    except Exception as e:
+        return jsonify({"erro": f"{type(e).__name__}: {e}"}), 500
+
+
+@app.route("/debug/estado")
+def debug_estado():
+    """v2.16.61: resumo geral pra visao rapida."""
+    if not _cliente_lan_permitido():
+        return _debug_deny()
+    from pathlib import Path as _P
+    n_payloads = len(list(_P("payloads").glob("*.json"))) if _P("payloads").exists() else 0
+    n_rascunhos = 0
+    try:
+        import rascunhos_resposta as rr
+        n_rascunhos = len(rr.listar(status="pendente"))
+    except Exception:
+        pass
+    return jsonify({
+        "app_version": APP_VERSION,
+        "polling": POLLING.snapshot(),
+        "passada": PASSADA.snapshot(),
+        "importar": IMPORTAR.snapshot(),
+        "contadores": dd.resumo_contadores(),
+        "n_payloads_disco": n_payloads,
+        "n_rascunhos_pendentes": n_rascunhos,
+    })
+
+
 # ── Helpers de resposta ─────────────────────────────────────────
 
 def _renderizar_status_passada(mensagem: str = "") -> str:
